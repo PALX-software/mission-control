@@ -7,20 +7,7 @@ import {
   type TaskScope,
 } from "../core/stacktank";
 
-export type AgentRow = {
-  id: string;
-  name: string;
-  role: string;
-  automation_level: "auto" | "hybrid" | "manual";
-};
-
-export type InitiativeRow = {
-  id: string;
-  title: string;
-  scope_text: string;
-  stage: "discover" | "plan" | "build" | "validate" | "launch";
-  risk_level: "low" | "medium" | "high";
-};
+export type { ProjectDefinitionInput };
 
 export type ProjectRow = {
   id: string;
@@ -51,62 +38,16 @@ export type ProjectOutputRow = {
   definition: string;
 };
 
-export async function fetchAgents() {
-  return supabase.from("agents").select("id,name,role,automation_level").order("created_at", { ascending: true });
-}
-
-export async function createAgent(payload: Omit<AgentRow, "id">) {
-  return supabase.from("agents").insert(payload).select("id,name,role,automation_level").single();
-}
-
-export async function fetchInitiatives() {
-  return supabase
-    .from("initiatives")
-    .select("id,title,scope_text,stage,risk_level")
-    .order("created_at", { ascending: false });
-}
-
-export async function createInitiative(payload: Omit<InitiativeRow, "id">) {
-  const created = await supabase
-    .from("initiatives")
-    .insert(payload)
-    .select("id,title,scope_text,stage,risk_level")
-    .single();
-
-  if (created.error || !created.data) return created;
-
-  const taskScope: TaskScope = {
-    text: created.data.scope_text,
-    tags: [created.data.stage],
-    riskLevel: created.data.risk_level,
-  };
-
-  const assignedAgents = stacktankRoute(taskScope);
-
-  await supabase.from("initiative_assignments").insert(
-    assignedAgents.map((agent) => ({
-      initiative_id: created.data!.id,
-      agent_key: agent,
-      status: "queued",
-    })),
-  );
-
-  return created;
-}
-
-export async function fetchAssignments(initiativeId: string) {
-  return supabase
-    .from("initiative_assignments")
-    .select("id,agent_key,status")
-    .eq("initiative_id", initiativeId)
-    .order("created_at", { ascending: true });
-}
+const PROJECT_FIELDS =
+  "id,name,objective,scope_definition,audience,constraints,risk_level,discovery_mode,github_repo,prompt_blueprint";
+const PAGE_SIZE = 50;
 
 export async function fetchProjects() {
   return supabase
     .from("projects")
-    .select("id,name,objective,scope_definition,audience,constraints,risk_level,discovery_mode,github_repo,prompt_blueprint")
-    .order("created_at", { ascending: false });
+    .select(PROJECT_FIELDS)
+    .order("created_at", { ascending: false })
+    .limit(PAGE_SIZE);
 }
 
 export async function createProject(definition: Omit<ProjectRow, "id" | "prompt_blueprint">) {
@@ -123,7 +64,7 @@ export async function createProject(definition: Omit<ProjectRow, "id" | "prompt_
   const created = await supabase
     .from("projects")
     .insert({ ...definition, prompt_blueprint })
-    .select("id,name,objective,scope_definition,audience,constraints,risk_level,discovery_mode,github_repo,prompt_blueprint")
+    .select(PROJECT_FIELDS)
     .single();
 
   if (created.error || !created.data) return created;
@@ -150,18 +91,22 @@ export async function createProject(definition: Omit<ProjectRow, "id" | "prompt_
   return created;
 }
 
-export async function suggestFeatureQuestions(input: ProjectDefinitionInput) {
-  const baseQuestions = [
+export async function deleteProject(projectId: string) {
+  return supabase.from("projects").delete().eq("id", projectId);
+}
+
+export function suggestFeatureQuestions(input: ProjectDefinitionInput): string[] {
+  const questions = [
     `¿Qué flujo crítico de usuario debe existir en ${input.projectName}?`,
     "¿Qué integración externa (pagos, CRM, ERP, etc.) es obligatoria desde la fase 1?",
     "¿Cuál es el principal riesgo legal/compliance que debemos mitigar antes de salir a producción?",
   ];
 
   if (input.discoveryMode) {
-    baseQuestions.push("¿Qué hipótesis quieres validar primero para descubrir nuevos features?");
+    questions.push("¿Qué hipótesis quieres validar primero para descubrir nuevos features?");
   }
 
-  return baseQuestions;
+  return questions;
 }
 
 export async function fetchProjectFeatures(projectId: string) {
@@ -169,7 +114,8 @@ export async function fetchProjectFeatures(projectId: string) {
     .from("project_features")
     .select("id,project_id,title,detail,status")
     .eq("project_id", projectId)
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: true })
+    .limit(PAGE_SIZE);
 }
 
 export async function createProjectFeature(payload: Omit<ProjectFeatureRow, "id">) {
@@ -180,12 +126,17 @@ export async function createProjectFeature(payload: Omit<ProjectFeatureRow, "id"
     .single();
 }
 
+export async function deleteProjectFeature(featureId: string) {
+  return supabase.from("project_features").delete().eq("id", featureId);
+}
+
 export async function fetchProjectOutputs(projectId: string) {
   return supabase
     .from("project_outputs")
     .select("id,project_id,name,output_type,definition")
     .eq("project_id", projectId)
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: true })
+    .limit(PAGE_SIZE);
 }
 
 export async function createProjectOutput(payload: Omit<ProjectOutputRow, "id">) {
@@ -194,4 +145,48 @@ export async function createProjectOutput(payload: Omit<ProjectOutputRow, "id">)
     .insert(payload)
     .select("id,project_id,name,output_type,definition")
     .single();
+}
+
+export async function deleteProjectOutput(outputId: string) {
+  return supabase.from("project_outputs").delete().eq("id", outputId);
+}
+
+// Initiatives / agents API — available for future UI screens
+export async function fetchInitiatives() {
+  return supabase
+    .from("initiatives")
+    .select("id,title,scope_text,stage,risk_level")
+    .order("created_at", { ascending: false })
+    .limit(PAGE_SIZE);
+}
+
+export async function createInitiative(payload: {
+  title: string;
+  scope_text: string;
+  stage: "discover" | "plan" | "build" | "validate" | "launch";
+  risk_level: "low" | "medium" | "high";
+}) {
+  const created = await supabase
+    .from("initiatives")
+    .insert(payload)
+    .select("id,title,scope_text,stage,risk_level")
+    .single();
+
+  if (created.error || !created.data) return created;
+
+  const taskScope: TaskScope = {
+    text: created.data.scope_text,
+    tags: [created.data.stage],
+    riskLevel: created.data.risk_level,
+  };
+
+  await supabase.from("initiative_assignments").insert(
+    stacktankRoute(taskScope).map((agent) => ({
+      initiative_id: created.data!.id,
+      agent_key: agent,
+      status: "queued",
+    })),
+  );
+
+  return created;
 }
