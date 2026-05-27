@@ -4,7 +4,9 @@
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/main.js"
+    "start": "node dist/main.js",
+    "start:dev": "tsc -w -p tsconfig.json & node --watch dist/main.js",
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.2",

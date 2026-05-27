@@ -2,6 +2,12 @@ import { Injectable } from '@nestjs/common';
 
 export type Agent = { name: string; domain: string };
 
+const ROUTING_RULES: Array<{ pattern: RegExp; agent: string }> = [
+  { pattern: /legal|compliance|contrato|riesgo|contract|risk|gdpr|privacy|privacidad/, agent: 'Legal Guardian' },
+  { pattern: /go-to-market|growth|campaña|ads|seo|campaign|marketing/, agent: 'Marketing Ops' },
+  { pattern: /flujo|ui|ux|diseño|experiencia|design|flow|prototype|wireframe/, agent: 'UX/UI Designer' },
+];
+
 @Injectable()
 export class MissionService {
   private readonly agents: Agent[] = [
@@ -10,7 +16,7 @@ export class MissionService {
     { name: 'Marketing Ops', domain: 'Go-to-market y growth' },
     { name: 'UX/UI Designer', domain: 'Flujos, prototipos y diseño' },
     { name: 'Software Engineer', domain: 'Arquitectura e implementación' },
-    { name: 'QA Lead', domain: 'Pruebas, calidad y release readiness' }
+    { name: 'QA Lead', domain: 'Pruebas, calidad y release readiness' },
   ];
 
   listAgents(): Agent[] {
@@ -26,9 +32,9 @@ export class MissionService {
     const signal = text.toLowerCase();
     const picks = new Set(['Product Strategist', 'Software Engineer', 'QA Lead']);
 
-    if (/legal|compliance|contrato|riesgo/.test(signal)) picks.add('Legal Guardian');
-    if (/go-to-market|growth|campaña|ads|seo/.test(signal)) picks.add('Marketing Ops');
-    if (/flujo|ui|ux|diseño|experiencia/.test(signal)) picks.add('UX/UI Designer');
+    for (const { pattern, agent } of ROUTING_RULES) {
+      if (pattern.test(signal)) picks.add(agent);
+    }
 
     return Array.from(picks);
   }

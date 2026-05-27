@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Post } from '@nestjs/common';
 import { MissionService } from './mission.service';
+import { CreateAgentDto, DelegateDto } from './mission.dto';
 
 @Controller('api')
 export class AgentController {
@@ -11,15 +12,16 @@ export class AgentController {
   }
 
   @Post('agents')
-  createAgent(@Body() payload: { name: string; domain: string }) {
-    return this.missionService.addAgent(payload);
+  createAgent(@Body() dto: CreateAgentDto) {
+    return this.missionService.addAgent(dto);
   }
 
   @Post('delegate')
-  delegate(@Body() payload: { initiative: string }) {
+  @HttpCode(200)
+  delegate(@Body() dto: DelegateDto) {
     return {
-      initiative: payload.initiative,
-      delegatedTo: this.missionService.suggestDelegation(payload.initiative)
+      initiative: dto.initiative,
+      delegatedTo: this.missionService.suggestDelegation(dto.initiative),
     };
   }
 }
