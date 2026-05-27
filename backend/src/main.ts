@@ -2,9 +2,10 @@ import { NestFactory } from '@nestjs/core';
 import { Module } from '@nestjs/common';
 import { AgentController } from './mission.controller';
 import { MissionService } from './mission.service';
+import { HealthController } from './health.controller';
 
 @Module({
-  controllers: [AgentController],
+  controllers: [AgentController, HealthController],
   providers: [MissionService],
 })
 class AppModule {}
