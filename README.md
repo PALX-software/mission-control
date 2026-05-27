@@ -1,100 +1,42 @@
-# Mission Control Core
+# Mission Control (NestJS Fullstack)
 
-Panel de administración para proyectos multi-agente con enfoque en:
+Refactor completo a arquitectura **NestJS para backend y frontend**.
 
-- Definir **scope completo** por proyecto para diseñar prompts robustos.
-- Descubrir features interactuando con el usuario durante discovery.
-- Auto-definir cantidad/tipo de agentes por proyecto (StackTank).
-- Definir salidas esperadas (outputs) desde el panel.
-- Exigir conexión con repositorio GitHub para trazabilidad end-to-end.
+## Estructura
 
-## Stack
+- `backend/`: API NestJS para agentes y delegación.
+- `frontend/`: Servidor web NestJS (SSR con EJS) que consume la API.
 
-- **Frontend:** Vite + React + TailwindCSS
-- **Core de orquestación:** StackTank (`src/core/stacktank.ts`)
-- **Backend app-facing:** Supabase (DB + funciones de datos desde frontend)
+## Backend (puerto 3001)
 
-## Configurar instalación sobre Supabase
+Endpoints:
 
-### Opción A — Local (recomendada para desarrollo)
+- `GET /api/agents`
+- `POST /api/agents`
+- `POST /api/delegate`
 
-1. Instala Supabase CLI.
-2. Ejecuta:
+## Frontend (puerto 3000)
 
-```bash
-npm run setup:supabase
-```
+- Renderiza dashboard inicial.
+- Permite alta de agentes.
+- Ejecuta delegación automática consultando backend.
 
-Este script realiza:
-- `supabase start`
-- `supabase db reset --local` (aplica migraciones)
-- `supabase db seed --local`
-- `supabase gen types typescript --local > src/lib/database.types.ts`
-
-3. Levanta frontend:
+## Ejecución
 
 ```bash
 npm install
-npm run dev
+npm run build
+npm run start:backend
+npm run start:frontend
 ```
 
-### Opción B — Proyecto cloud en Supabase
+Opcional:
 
-1. Crea proyecto en Supabase y obtén:
-   - `project-ref`
-   - `anon key`
-   - `db password`
-2. Copia `.env.example` a `.env` y completa variables.
-3. Linkea el repo local al proyecto cloud:
+- `API_BASE_URL` para apuntar frontend a otra URL de backend.
 
-```bash
-supabase link --project-ref <project-ref>
-```
+## Siguiente fase (Ollama privado)
 
-4. Empuja esquema:
-
-```bash
-supabase db push
-```
-
-5. (Opcional) Carga seed:
-
-```bash
-supabase db seed
-```
-
-## Esquema de datos actual
-
-- `projects`
-- `project_agents`
-- `project_features`
-- `project_outputs`
-- `agents`
-- `initiatives`
-- `initiative_assignments`
-
-Migraciones en `supabase/migrations`.
-
-## Variables de entorno
-
-Copiar `.env.example` a `.env` y completar:
-
-- `VITE_SUPABASE_URL`
-- `VITE_SUPABASE_ANON_KEY`
-- `SUPABASE_PROJECT_REF` (opcional para CI)
-- `SUPABASE_ACCESS_TOKEN` (opcional para CI)
-- `SUPABASE_DB_PASSWORD` (opcional para CI)
-
-## Scripts útiles
-
-- `npm run setup:supabase`
-- `npm run supabase:start`
-- `npm run supabase:stop`
-- `npm run supabase:reset`
-- `npm run supabase:types`
-
-## Próximos pasos
-
-- Mover funciones críticas de asignación a Supabase Edge Functions.
-- Conectar ejecución de agentes con GitHub Actions + webhooks por output.
-- Integrar gateway privado de Ollama en cloud aislada con auditoría.
+1. Introducir cola de trabajos (Redis/NATS) para agentes.
+2. Ejecutores por rol con contratos de entrada/salida versionados.
+3. Gateway privado para Ollama en VPC aislada con auditoría.
+4. Política de seguridad: cifrado, masking PII, y trazabilidad por tarea.
