@@ -1,10 +1,19 @@
 {
   "name": "mission-control",
   "private": true,
-  "workspaces": ["backend", "frontend"],
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
   "scripts": {
     "build": "npm run build -w backend && npm run build -w frontend",
     "start:backend": "npm run start -w backend",
-    "start:frontend": "npm run start -w frontend"
+    "start:frontend": "npm run start -w frontend",
+    "test": "vitest run --root .",
+    "test:watch": "vitest --root ."
+  },
+  "devDependencies": {
+    "@vitest/ui": "^4.1.7",
+    "vitest": "^4.1.7"
   }
 }

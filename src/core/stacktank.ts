@@ -26,33 +26,54 @@ export type ProjectDefinitionInput = {
 };
 
 const byKeyword: Record<string, AgentType[]> = {
+  // legal / compliance
   legal: ["legal", "product"],
   contrato: ["legal"],
+  contract: ["legal"],
   compliance: ["legal", "qa"],
   gdpr: ["legal", "data"],
+  privacidad: ["legal", "data"],
+  privacy: ["legal", "data"],
+  // design
   diseño: ["design", "product"],
+  design: ["design", "product"],
   ux: ["design"],
   ui: ["design"],
+  // marketing
   campaña: ["marketing", "product"],
+  campaign: ["marketing", "product"],
   growth: ["marketing"],
+  marketing: ["marketing"],
+  // development
   api: ["development", "qa"],
   integración: ["development", "devops"],
+  integration: ["development", "devops"],
+  feature: ["development", "product"],
+  // devops / infrastructure
   devops: ["devops"],
   observabilidad: ["devops", "qa"],
+  observability: ["devops", "qa"],
+  deploy: ["devops"],
+  infraestructura: ["devops"],
+  infrastructure: ["devops"],
+  // data / analytics
   analytics: ["data", "product"],
-  feature: ["development", "product"],
+  datos: ["data"],
+  data: ["data"],
+  // qa / testing
   testing: ["qa", "development"],
+  pruebas: ["qa", "development"],
 };
 
 export function stacktankRoute(scope: TaskScope): AgentType[] {
   const seed = new Set<AgentType>(["product", "development", "qa"]);
   const signal = `${scope.text} ${scope.tags.join(" ")}`.toLowerCase();
 
-  Object.entries(byKeyword).forEach(([keyword, agents]) => {
+  for (const [keyword, agents] of Object.entries(byKeyword)) {
     if (signal.includes(keyword)) {
-      agents.forEach((agent) => seed.add(agent));
+      for (const agent of agents) seed.add(agent);
     }
-  });
+  }
 
   if (scope.riskLevel === "high") {
     seed.add("legal");
@@ -76,15 +97,18 @@ export function designProjectPrompt(definition: ProjectDefinitionInput): string 
 }
 
 export function recommendAgentsForProject(definition: ProjectDefinitionInput): AgentType[] {
-  const routed = stacktankRoute({
-    text: `${definition.projectScope} ${definition.objective} ${definition.constraints}`,
-    tags: [definition.audience],
-    riskLevel: definition.riskLevel,
-  });
+  const routed = new Set(
+    stacktankRoute({
+      text: `${definition.projectScope} ${definition.objective} ${definition.constraints}`,
+      tags: [definition.audience],
+      riskLevel: definition.riskLevel,
+    }),
+  );
 
   if (definition.discoveryMode) {
-    routed.push("product", "design");
+    routed.add("product");
+    routed.add("design");
   }
 
-  return Array.from(new Set(routed));
+  return Array.from(routed);
 }
