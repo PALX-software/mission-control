@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { Controller, Get, Module, Render } from '@nestjs/common';
 import { join } from 'path';
+import { HealthController } from './health.controller';
 
 @Controller()
 class WebController {
@@ -14,7 +15,7 @@ class WebController {
 }
 
 @Module({
-  controllers: [WebController]
+  controllers: [WebController, HealthController]
 })
 class AppModule {}
 

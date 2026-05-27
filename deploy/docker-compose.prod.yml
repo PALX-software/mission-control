@@ -1,0 +1,40 @@
+services:
+  backend:
+    build:
+      context: ../backend
+    image: mission-control/backend:prod
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+    networks:
+      - mission_net
+
+  frontend:
+    build:
+      context: ../frontend
+    image: mission-control/frontend:prod
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      API_BASE_URL: http://backend:3001/api
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+    networks:
+      - mission_net
+
+networks:
+  mission_net:
+    driver: bridge
