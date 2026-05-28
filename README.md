@@ -1,11 +1,12 @@
-# Mission Control (NestJS Fullstack)
+# Mission Control
 
-Arquitectura NestJS para backend y frontend con despliegue en contenedores y persistencia en Supabase.
+Panel operativo para crear misiones, delegarlas a agentes, generar planes con ChatGPT y guardar el historial en Supabase. Produccion corre como Cloudflare Worker en `mission-control.zeqhora.com`.
 
 ## Estructura
 
-- `backend/`: API NestJS para agentes, delegacion y healthcheck.
-- `frontend/`: servidor web NestJS con EJS que consume la API.
+- `worker/`: app principal en Cloudflare Workers para `mission-control.zeqhora.com`.
+- `backend/`: API NestJS alternativa para agentes, delegacion y healthcheck.
+- `frontend/`: servidor web NestJS con EJS que consume la API alternativa.
 - `supabase/`: migraciones y seed de datos base.
 - `deploy/docker-compose.prod.yml`: stack de produccion para frontend + backend.
 
@@ -24,6 +25,25 @@ SUPABASE_PUBLISHABLE_KEY=...
 ```
 
 `SUPABASE_SECRET_KEY` o `SUPABASE_SERVICE_ROLE_KEY` son opcionales y solo deben usarse en backend si se requiere acceso privilegiado.
+
+## Capa IA
+
+El Worker usa OpenAI Responses API como capa ChatGPT para:
+
+- Crear misiones con resumen, riesgo, plan, agentes asignados, criterios de aceptacion y outputs.
+- Ejecutar ciclos IA sobre una mision y guardar el resultado en `ai_runs`.
+- Responder consultas operativas con contexto de la mision seleccionada.
+- Delegar iniciativas rapidas sin crear una mision persistente.
+
+Variables/secrets:
+
+```bash
+OPENAI_MODEL=gpt-5.2-chat-latest
+OPENAI_API_KEY=sk-...
+MISSION_CONTROL_OPERATOR_TOKEN=...
+```
+
+`OPENAI_API_KEY` y `MISSION_CONTROL_OPERATOR_TOKEN` deben configurarse como secrets del Worker, no en Git. Si `OPENAI_API_KEY` falta, el sistema conserva un fallback deterministico para crear planes basicos, pero ChatGPT queda bloqueado hasta configurar el secreto.
 
 ## Backend (puerto 3001)
 
@@ -73,7 +93,7 @@ curl http://localhost:3001/health
 
 ## Dominio
 
-`worldcuptrading.zeqhora.com` esta configurado como Custom Domain de Cloudflare Worker. `mission-control.zeqhora.com` debe seguir el mismo patron: Worker `mission-control`, dominio custom `mission-control.zeqhora.com`, estado proxied, y variables/secrets en Cloudflare.
+`worldcuptrading.zeqhora.com` esta configurado como Custom Domain de Cloudflare Worker. `mission-control.zeqhora.com` sigue el mismo patron: Worker `mission-control`, dominio custom `mission-control.zeqhora.com`, estado proxied, y variables/secrets en Cloudflare.
 
 El repo incluye `wrangler.toml` y `worker/src/index.mjs` para desplegar en Cloudflare Workers:
 
@@ -87,8 +107,25 @@ Variables de Cloudflare Worker:
 - `PUBLIC_APP_URL=https://mission-control.zeqhora.com`
 - `SUPABASE_URL=https://vhqgiqluotnxkepmrntm.supabase.co`
 - `SUPABASE_PUBLISHABLE_KEY=...`
+- `OPENAI_MODEL=gpt-5.2-chat-latest`
 
-Secrets opcionales si el Worker necesita acceso privilegiado:
+Secrets de Cloudflare Worker:
 
+- `OPENAI_API_KEY`
+- `MISSION_CONTROL_OPERATOR_TOKEN`
 - `SUPABASE_SECRET_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
+
+## Worker API
+
+- `GET /health`
+- `GET /api/status`
+- `GET /api/agents`
+- `POST /api/agents`
+- `POST /api/delegate`
+- `GET /api/missions`
+- `POST /api/missions`
+- `GET /api/missions/:id`
+- `POST /api/missions/:id/run`
+- `PATCH /api/steps/:id`
+- `POST /api/chat`
