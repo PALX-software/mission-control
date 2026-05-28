@@ -38,7 +38,7 @@ El Worker usa OpenAI Responses API como capa ChatGPT para:
 Variables/secrets:
 
 ```bash
-OPENAI_MODEL=gpt-5.2-chat-latest
+OPENAI_MODEL=chat-latest
 OPENAI_API_KEY=sk-...
 MISSION_CONTROL_OPERATOR_TOKEN=...
 ```
@@ -107,7 +107,7 @@ Variables de Cloudflare Worker:
 - `PUBLIC_APP_URL=https://mission-control.zeqhora.com`
 - `SUPABASE_URL=https://vhqgiqluotnxkepmrntm.supabase.co`
 - `SUPABASE_PUBLISHABLE_KEY=...`
-- `OPENAI_MODEL=gpt-5.2-chat-latest`
+- `OPENAI_MODEL=chat-latest`
 
 Secrets de Cloudflare Worker:
 

@@ -3,7 +3,8 @@ import worker from '../worker/src/index.mjs';
 const env = {
   PUBLIC_APP_URL: 'http://localhost',
   SUPABASE_URL: '',
-  SUPABASE_PUBLISHABLE_KEY: ''
+  SUPABASE_PUBLISHABLE_KEY: '',
+  OPENAI_MODEL: 'chat-latest'
 };
 
 const health = await worker.fetch(new Request('http://localhost/health'), env);

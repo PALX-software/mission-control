@@ -12,7 +12,7 @@ const stages = ['discover', 'plan', 'build', 'validate', 'launch'];
 const riskLevels = ['low', 'medium', 'high'];
 const taskStatuses = ['queued', 'running', 'blocked', 'done'];
 const outputTypes = ['doc', 'code', 'qa_report', 'legal_review', 'launch_asset'];
-const defaultOpenAiModel = 'gpt-5.2-chat-latest';
+const defaultOpenAiModel = 'chat-latest';
 
 function json(data, init = {}) {
   return new Response(JSON.stringify(data), {

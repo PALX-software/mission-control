@@ -14,4 +14,4 @@ enabled = true
 PUBLIC_APP_URL = "https://mission-control.zeqhora.com"
 SUPABASE_URL = "https://vhqgiqluotnxkepmrntm.supabase.co"
 SUPABASE_PUBLISHABLE_KEY = "sb_publishable_kZHQPoFL0q9nTjBrAuDi4Q_SlCHk8s1"
-OPENAI_MODEL = "gpt-5.2-chat-latest"
+OPENAI_MODEL = "chat-latest"
