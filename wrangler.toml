@@ -1,0 +1,16 @@
+name = "mission-control"
+main = "worker/src/index.mjs"
+compatibility_date = "2026-05-28"
+compatibility_flags = ["nodejs_compat"]
+
+routes = [
+  { pattern = "mission-control.zeqhora.com", custom_domain = true }
+]
+
+[observability]
+enabled = true
+
+[vars]
+PUBLIC_APP_URL = "https://mission-control.zeqhora.com"
+SUPABASE_URL = "https://vhqgiqluotnxkepmrntm.supabase.co"
+SUPABASE_PUBLISHABLE_KEY = "sb_publishable_kZHQPoFL0q9nTjBrAuDi4Q_SlCHk8s1"

@@ -73,6 +73,22 @@ curl http://localhost:3001/health
 
 ## Dominio
 
-Cloudflare DNS tiene `mission-control.zeqhora.com` como CNAME DNS-only hacia `vhqgiqluotnxkepmrntm.supabase.co`.
+`worldcuptrading.zeqhora.com` esta configurado como Custom Domain de Cloudflare Worker. `mission-control.zeqhora.com` debe seguir el mismo patron: Worker `mission-control`, dominio custom `mission-control.zeqhora.com`, estado proxied, y variables/secrets en Cloudflare.
 
-Para activar ese hostname como dominio custom de Supabase, el proyecto debe estar en un plan/add-on compatible con Custom Domains. Despues de activar el plan, registra `mission-control.zeqhora.com` en Supabase, agrega el TXT `_acme-challenge` que Supabase entregue y ejecuta la verificacion/activacion desde el dashboard o CLI.
+El repo incluye `wrangler.toml` y `worker/src/index.mjs` para desplegar en Cloudflare Workers:
+
+```bash
+npm run check:worker
+npm run deploy:worker
+```
+
+Variables de Cloudflare Worker:
+
+- `PUBLIC_APP_URL=https://mission-control.zeqhora.com`
+- `SUPABASE_URL=https://vhqgiqluotnxkepmrntm.supabase.co`
+- `SUPABASE_PUBLISHABLE_KEY=...`
+
+Secrets opcionales si el Worker necesita acceso privilegiado:
+
+- `SUPABASE_SECRET_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`

@@ -4,6 +4,9 @@
   "workspaces": ["backend", "frontend"],
   "scripts": {
     "build": "npm run build -w backend && npm run build -w frontend",
+    "check:worker": "node scripts/check-worker.mjs",
+    "deploy:worker": "npx wrangler deploy",
+    "dev:worker": "npx wrangler dev",
     "start:backend": "npm run start -w backend",
     "start:frontend": "npm run start -w frontend"
   }
