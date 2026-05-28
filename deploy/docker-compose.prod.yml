@@ -1,11 +1,17 @@
 services:
   backend:
     build:
-      context: ../backend
+      context: ..
+      dockerfile: backend/Dockerfile
     image: mission-control/backend:prod
     restart: unless-stopped
     environment:
       NODE_ENV: production
+      SUPABASE_URL: ${SUPABASE_URL:?Set SUPABASE_URL}
+      SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:?Set SUPABASE_PUBLISHABLE_KEY}
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-}
+      SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
       interval: 20s
@@ -16,12 +22,13 @@ services:
 
   frontend:
     build:
-      context: ../frontend
+      context: ..
+      dockerfile: frontend/Dockerfile
     image: mission-control/frontend:prod
     restart: unless-stopped
     environment:
       NODE_ENV: production
-      API_BASE_URL: http://backend:3001/api
+      API_BASE_URL: ${API_BASE_URL:-http://backend:3001/api}
     depends_on:
       backend:
         condition: service_healthy

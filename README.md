@@ -1,12 +1,29 @@
 # Mission Control (NestJS Fullstack)
 
-Refactor completo a arquitectura **NestJS para backend y frontend** con camino de despliegue a producción en contenedores.
+Arquitectura NestJS para backend y frontend con despliegue en contenedores y persistencia en Supabase.
 
 ## Estructura
 
-- `backend/`: API NestJS para agentes, delegación y healthcheck.
-- `frontend/`: Servidor web NestJS (SSR con EJS) que consume la API.
-- `deploy/docker-compose.prod.yml`: stack de producción para levantar frontend+backend.
+- `backend/`: API NestJS para agentes, delegacion y healthcheck.
+- `frontend/`: servidor web NestJS con EJS que consume la API.
+- `supabase/`: migraciones y seed de datos base.
+- `deploy/docker-compose.prod.yml`: stack de produccion para frontend + backend.
+
+## Supabase
+
+Proyecto enlazado:
+
+- Project ref: `vhqgiqluotnxkepmrntm`
+- URL: `https://vhqgiqluotnxkepmrntm.supabase.co`
+
+Variables requeridas en produccion:
+
+```bash
+SUPABASE_URL=https://vhqgiqluotnxkepmrntm.supabase.co
+SUPABASE_PUBLISHABLE_KEY=...
+```
+
+`SUPABASE_SECRET_KEY` o `SUPABASE_SERVICE_ROLE_KEY` son opcionales y solo deben usarse en backend si se requiere acceso privilegiado.
 
 ## Backend (puerto 3001)
 
@@ -21,10 +38,10 @@ Endpoints:
 
 - Renderiza dashboard inicial.
 - Permite alta de agentes.
-- Ejecuta delegación automática consultando backend.
+- Ejecuta delegacion automatica consultando backend.
 - Health endpoint: `GET /health`.
 
-## Ejecutar en local (desarrollo)
+## Ejecutar en local
 
 ```bash
 npm install
@@ -33,15 +50,15 @@ npm run start:backend
 npm run start:frontend
 ```
 
-## Despliegue a producción (Docker Compose)
+## Despliegue a produccion (Docker Compose)
 
-1. Configura variables de entorno:
+1. Configura variables:
 
 ```bash
 cp .env.production.example .env.production
 ```
 
-2. Levanta stack de producción:
+2. Levanta el stack:
 
 ```bash
 docker compose -f deploy/docker-compose.prod.yml --env-file .env.production up -d --build
@@ -54,9 +71,8 @@ curl http://localhost:3000/health
 curl http://localhost:3001/health
 ```
 
-## Siguiente fase (Ollama privado)
+## Dominio
 
-1. Introducir cola de trabajos (Redis/NATS) para agentes.
-2. Ejecutores por rol con contratos de entrada/salida versionados.
-3. Gateway privado para Ollama en VPC aislada con auditoría.
-4. Política de seguridad: cifrado, masking PII y trazabilidad por tarea.
+Cloudflare DNS tiene `mission-control.zeqhora.com` como CNAME DNS-only hacia `vhqgiqluotnxkepmrntm.supabase.co`.
+
+Para activar ese hostname como dominio custom de Supabase, el proyecto debe estar en un plan/add-on compatible con Custom Domains. Despues de activar el plan, registra `mission-control.zeqhora.com` en Supabase, agrega el TXT `_acme-challenge` que Supabase entregue y ejecuta la verificacion/activacion desde el dashboard o CLI.
