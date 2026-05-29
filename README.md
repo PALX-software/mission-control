@@ -30,7 +30,10 @@ SUPABASE_PUBLISHABLE_KEY=...
 
 El Worker usa OpenAI Responses API como capa ChatGPT para:
 
+- Crear proyectos como contenedor principal de trabajo.
 - Crear misiones con resumen, riesgo, plan, agentes asignados, criterios de aceptacion y outputs.
+- Convertir planes y ciclos IA en tareas accionables.
+- Guardar artifacts generados por la IA asociados al proyecto y la mision.
 - Ejecutar ciclos IA sobre una mision, guardar historial en `ai_runs` y actualizar memoria acumulada por proyecto.
 - Responder consultas operativas con contexto de la mision seleccionada.
 - Delegar iniciativas rapidas sin crear una mision persistente.
@@ -40,6 +43,7 @@ Cada ciclo IA:
 - Recibe la mision, pasos, asignaciones, outputs, memoria acumulada y ciclos recientes.
 - Devuelve avance, decisiones, hechos nuevos, riesgos, siguientes acciones y artifacts.
 - Actualiza `learning_summary`, `cycle_count` y `last_cycle_at` en `initiatives`.
+- Si la mision pertenece a un proyecto, crea tareas en `project_tasks`, artifacts en `project_artifacts` y actualiza la memoria del proyecto.
 - Guarda un snapshot en `ai_runs` con `cycle_number`, `instruction`, `response` y `memory_snapshot`.
 
 Variables/secrets:
@@ -130,10 +134,18 @@ Secrets de Cloudflare Worker:
 - `GET /api/agents`
 - `POST /api/agents`
 - `POST /api/delegate`
+- `GET /api/projects`
+- `POST /api/projects`
+- `GET /api/projects/:id`
+- `GET /api/projects/:id/tasks`
+- `POST /api/projects/:id/tasks`
+- `GET /api/projects/:id/artifacts`
+- `POST /api/projects/:id/artifacts`
 - `GET /api/missions`
 - `POST /api/missions`
 - `GET /api/missions/:id`
 - `GET /api/missions/:id/runs`
 - `POST /api/missions/:id/run`
 - `PATCH /api/steps/:id`
+- `PATCH /api/tasks/:id`
 - `POST /api/chat`

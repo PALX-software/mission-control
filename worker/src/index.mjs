@@ -8,11 +8,15 @@ const fallbackAgents = [
 ];
 
 const fallbackMissions = [];
+const fallbackProjects = [];
 const stages = ['discover', 'plan', 'build', 'validate', 'launch'];
 const riskLevels = ['low', 'medium', 'high'];
 const taskStatuses = ['queued', 'running', 'blocked', 'done'];
+const taskPriorities = ['low', 'medium', 'high', 'critical'];
+const projectStatuses = ['active', 'paused', 'done', 'archived'];
 const outputTypes = ['doc', 'code', 'qa_report', 'legal_review', 'launch_asset'];
 const defaultOpenAiModel = 'chat-latest';
+const defaultProjectRepo = 'https://github.com/PALX-software/mission-control';
 
 function json(data, init = {}) {
   return new Response(JSON.stringify(data), {
@@ -669,9 +673,53 @@ function missionScopeText(payload) {
     .join('\n\n');
 }
 
+function projectScopeText(payload) {
+  return normalizeText(
+    payload.scope || payload.scopeDefinition || payload.scope_definition || payload.description,
+    normalizeText(payload.objective, normalizeText(payload.name, 'Proyecto operativo'))
+  );
+}
+
+function normalizeGithubRepo(value) {
+  const repo = normalizeText(value);
+  return repo.startsWith('https://github.com/') ? repo : defaultProjectRepo;
+}
+
+function projectPromptBlueprint(payload, plan) {
+  return [
+    `Proyecto: ${normalizeText(payload.name, 'Proyecto')}`,
+    `Objetivo: ${normalizeText(payload.objective, 'Definir objetivo')}`,
+    `Scope: ${projectScopeText(payload)}`,
+    `Restricciones: ${normalizeText(payload.constraints, 'Sin restricciones declaradas')}`,
+    `Resumen IA: ${normalizeText(plan?.summary, 'Plan inicial pendiente')}`
+  ].join('\n');
+}
+
+function mapProjectRow(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    objective: row.objective,
+    scopeDefinition: row.scope_definition,
+    audience: row.audience || '',
+    constraints: row.constraints || '',
+    riskLevel: row.risk_level,
+    status: row.status || 'active',
+    projectType: row.project_type || 'general',
+    learningSummary: row.learning_summary || '',
+    cycleCount: row.cycle_count || 0,
+    lastCycleAt: row.last_cycle_at || null,
+    githubRepo: row.github_repo || defaultProjectRepo,
+    promptBlueprint: row.prompt_blueprint || '',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at || row.created_at
+  };
+}
+
 function mapMissionRow(row) {
   return {
     id: row.id,
+    projectId: row.project_id || null,
     title: row.title,
     objective: row.objective || '',
     scopeText: row.scope_text,
@@ -744,6 +792,89 @@ function mapOutputRow(row) {
   };
 }
 
+function mapProjectTaskRow(row) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    missionId: row.initiative_id || null,
+    title: row.title,
+    detail: row.detail || '',
+    owner: row.owner_agent_key || 'Product Strategist',
+    priority: row.priority || 'medium',
+    status: row.status,
+    sourceCycleNumber: row.source_cycle_number || null,
+    dueOn: row.due_on || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at || row.created_at
+  };
+}
+
+function mapProjectArtifactRow(row) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    missionId: row.initiative_id || null,
+    aiRunId: row.ai_run_id || null,
+    name: row.name,
+    artifactType: row.artifact_type,
+    content: row.content,
+    sourceCycleNumber: row.source_cycle_number || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at || row.created_at
+  };
+}
+
+function projectTaskRowsFromSteps(projectId, missionId, steps, cycleNumber) {
+  if (!projectId) return [];
+
+  return safeArray(steps)
+    .map((step) => ({
+      project_id: projectId,
+      initiative_id: missionId || null,
+      title: normalizeText(step.title || step.stepTitle, 'Tarea operativa'),
+      detail: normalizeText(step.detail || step.note, 'Definir detalle de ejecucion.'),
+      owner_agent_key: normalizeText(step.owner || step.ownerAgentKey, 'Product Strategist'),
+      priority: normalizeEnum(step.priority, taskPriorities, 'medium'),
+      status: normalizeEnum(step.status, taskStatuses, 'queued'),
+      source_cycle_number: cycleNumber || null
+    }))
+    .filter((task) => task.title);
+}
+
+function projectArtifactRowsFromOutputs(projectId, missionId, outputs, cycleNumber, aiRunId) {
+  if (!projectId) return [];
+
+  return safeArray(outputs)
+    .map((output) => ({
+      project_id: projectId,
+      initiative_id: missionId || null,
+      ai_run_id: aiRunId || null,
+      name: normalizeText(output.name, 'Artifact'),
+      artifact_type: normalizeEnum(output.outputType || output.type || output.artifactType, outputTypes, 'doc'),
+      content: normalizeText(output.content || output.definition, 'Artifact pendiente de completar.'),
+      source_cycle_number: cycleNumber || null
+    }))
+    .filter((artifact) => artifact.name && artifact.content);
+}
+
+async function insertProjectTasks(env, rows) {
+  if (!rows.length || !getSupabase(env)) return [];
+  const data = await supabaseFetch(env, '/rest/v1/project_tasks?select=*', {
+    method: 'POST',
+    body: JSON.stringify(rows)
+  });
+  return safeArray(data).map(mapProjectTaskRow);
+}
+
+async function insertProjectArtifacts(env, rows) {
+  if (!rows.length || !getSupabase(env)) return [];
+  const data = await supabaseFetch(env, '/rest/v1/project_artifacts?select=*', {
+    method: 'POST',
+    body: JSON.stringify(rows)
+  });
+  return safeArray(data).map(mapProjectArtifactRow);
+}
+
 function buildFallbackMission(payload, plan) {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -788,6 +919,222 @@ function buildFallbackMission(payload, plan) {
   return mission;
 }
 
+async function listProjects(env) {
+  if (!getSupabase(env)) {
+    return fallbackProjects;
+  }
+
+  const rows = await safeSupabaseFetch(
+    env,
+    '/rest/v1/projects?select=id,name,objective,scope_definition,audience,constraints,risk_level,status,project_type,learning_summary,cycle_count,last_cycle_at,github_repo,prompt_blueprint,created_at,updated_at&order=created_at.desc&limit=50'
+  );
+
+  return safeArray(rows).map(mapProjectRow);
+}
+
+async function getProjectDetails(env, id) {
+  if (!getSupabase(env)) {
+    return fallbackProjects.find((project) => project.id === id);
+  }
+
+  const [projectRows, missionRows, taskRows, artifactRows] = await Promise.all([
+    supabaseFetch(env, `/rest/v1/projects?id=eq.${encodeURIComponent(id)}&select=*`),
+    supabaseFetch(
+      env,
+      `/rest/v1/initiatives?project_id=eq.${encodeURIComponent(id)}&select=id,project_id,title,objective,scope_text,stage,risk_level,summary,learning_summary,cycle_count,last_cycle_at,ai_status,ai_model,ai_response,created_at,updated_at&order=created_at.desc&limit=25`
+    ),
+    supabaseFetch(
+      env,
+      `/rest/v1/project_tasks?project_id=eq.${encodeURIComponent(id)}&select=*&order=created_at.desc&limit=100`
+    ),
+    supabaseFetch(
+      env,
+      `/rest/v1/project_artifacts?project_id=eq.${encodeURIComponent(id)}&select=*&order=created_at.desc&limit=100`
+    )
+  ]);
+
+  if (!projectRows?.[0]) {
+    return undefined;
+  }
+
+  return {
+    ...mapProjectRow(projectRows[0]),
+    missions: safeArray(missionRows).map(mapMissionRow),
+    tasks: safeArray(taskRows).map(mapProjectTaskRow),
+    artifacts: safeArray(artifactRows).map(mapProjectArtifactRow)
+  };
+}
+
+async function createProject(env, payload) {
+  const name = normalizeText(payload.name || payload.title);
+  const objective = normalizeText(payload.objective);
+  const scopeDefinition = projectScopeText(payload);
+
+  if (!name || !objective || !scopeDefinition) {
+    return json({ error: 'name, objective and scope are required' }, { status: 400 });
+  }
+
+  const agents = await listAgents(env);
+  const plan = await buildMissionPlan(
+    env,
+    {
+      title: name,
+      objective,
+      scope: scopeDefinition,
+      constraints: normalizeText(payload.constraints),
+      stage: 'plan',
+      riskLevel: normalizeEnum(payload.riskLevel || payload.risk_level, riskLevels, 'medium')
+    },
+    agents
+  );
+  const now = new Date().toISOString();
+
+  if (!getSupabase(env)) {
+    const project = {
+      id: crypto.randomUUID(),
+      name,
+      objective,
+      scopeDefinition,
+      audience: normalizeText(payload.audience, 'Equipo operativo'),
+      constraints: normalizeText(payload.constraints),
+      riskLevel: plan.riskLevel,
+      status: 'active',
+      projectType: normalizeText(payload.projectType || payload.project_type, 'general'),
+      learningSummary: '',
+      cycleCount: 0,
+      lastCycleAt: null,
+      githubRepo: normalizeGithubRepo(payload.githubRepo || payload.github_repo),
+      promptBlueprint: projectPromptBlueprint({ ...payload, name, objective }, plan),
+      createdAt: now,
+      updatedAt: now,
+      missions: [],
+      tasks: projectTaskRowsFromSteps('fallback', null, plan.plan).map((task) => ({
+        ...task,
+        id: crypto.randomUUID(),
+        projectId: 'fallback'
+      })),
+      artifacts: projectArtifactRowsFromOutputs('fallback', null, plan.outputs).map((artifact) => ({
+        ...artifact,
+        id: crypto.randomUUID(),
+        projectId: 'fallback'
+      }))
+    };
+    fallbackProjects.unshift(project);
+    return json(project, { status: 201 });
+  }
+
+  const projectRows = await supabaseFetch(env, '/rest/v1/projects?select=*', {
+    method: 'POST',
+    body: JSON.stringify({
+      name,
+      objective,
+      scope_definition: scopeDefinition,
+      audience: normalizeText(payload.audience, 'Equipo operativo'),
+      constraints: normalizeText(payload.constraints),
+      risk_level: plan.riskLevel,
+      discovery_mode: true,
+      github_repo: normalizeGithubRepo(payload.githubRepo || payload.github_repo),
+      prompt_blueprint: projectPromptBlueprint({ ...payload, name, objective }, plan),
+      status: 'active',
+      project_type: normalizeText(payload.projectType || payload.project_type, 'general')
+    })
+  });
+  const project = projectRows[0];
+  const missionResponse = await createMission(env, {
+    projectId: project.id,
+    title: `Plan inicial: ${name}`,
+    objective,
+    scope: scopeDefinition,
+    constraints: normalizeText(payload.constraints),
+    stage: 'plan',
+    riskLevel: plan.riskLevel,
+    existingPlan: plan
+  });
+
+  if (!missionResponse.ok) {
+    throw new Error(await missionResponse.text());
+  }
+
+  return json(await getProjectDetails(env, project.id), { status: 201 });
+}
+
+async function listProjectTasks(env, projectId) {
+  const project = await getProjectDetails(env, projectId);
+  return project ? project.tasks : undefined;
+}
+
+async function createProjectTask(env, projectId, payload) {
+  if (!normalizeText(payload.title)) {
+    return json({ error: 'title is required' }, { status: 400 });
+  }
+
+  if (!getSupabase(env)) {
+    return json({ error: 'Supabase is required for project tasks' }, { status: 503 });
+  }
+
+  const rows = await insertProjectTasks(env, [
+    {
+      project_id: projectId,
+      initiative_id: normalizeText(payload.missionId || payload.initiativeId) || null,
+      title: normalizeText(payload.title),
+      detail: normalizeText(payload.detail),
+      owner_agent_key: normalizeText(payload.owner || payload.ownerAgentKey, 'Product Strategist'),
+      priority: normalizeEnum(payload.priority, taskPriorities, 'medium'),
+      status: normalizeEnum(payload.status, taskStatuses, 'queued')
+    }
+  ]);
+
+  return rows[0] ? json(rows[0], { status: 201 }) : json({ error: 'task not created' }, { status: 500 });
+}
+
+async function listProjectArtifacts(env, projectId) {
+  const project = await getProjectDetails(env, projectId);
+  return project ? project.artifacts : undefined;
+}
+
+async function createProjectArtifact(env, projectId, payload) {
+  if (!normalizeText(payload.name) || !normalizeText(payload.content)) {
+    return json({ error: 'name and content are required' }, { status: 400 });
+  }
+
+  if (!getSupabase(env)) {
+    return json({ error: 'Supabase is required for project artifacts' }, { status: 503 });
+  }
+
+  const rows = await insertProjectArtifacts(env, [
+    {
+      project_id: projectId,
+      initiative_id: normalizeText(payload.missionId || payload.initiativeId) || null,
+      name: normalizeText(payload.name),
+      artifact_type: normalizeEnum(payload.artifactType || payload.type, outputTypes, 'doc'),
+      content: normalizeText(payload.content)
+    }
+  ]);
+
+  return rows[0] ? json(rows[0], { status: 201 }) : json({ error: 'artifact not created' }, { status: 500 });
+}
+
+async function updateProjectTask(env, taskId, payload) {
+  const updates = {
+    updated_at: new Date().toISOString()
+  };
+
+  if (payload.status) updates.status = normalizeEnum(payload.status, taskStatuses, 'queued');
+  if (payload.priority) updates.priority = normalizeEnum(payload.priority, taskPriorities, 'medium');
+  if (payload.title) updates.title = normalizeText(payload.title);
+  if (payload.detail !== undefined) updates.detail = normalizeText(payload.detail);
+  if (payload.owner || payload.ownerAgentKey) {
+    updates.owner_agent_key = normalizeText(payload.owner || payload.ownerAgentKey, 'Product Strategist');
+  }
+
+  const rows = await supabaseFetch(env, `/rest/v1/project_tasks?id=eq.${encodeURIComponent(taskId)}&select=*`, {
+    method: 'PATCH',
+    body: JSON.stringify(updates)
+  });
+
+  return rows?.[0] ? json(mapProjectTaskRow(rows[0])) : json({ error: 'task not found' }, { status: 404 });
+}
+
 async function storeAiRun(env, payload) {
   if (!getSupabase(env)) {
     return undefined;
@@ -814,21 +1161,25 @@ async function storeAiRun(env, payload) {
 async function createMission(env, payload) {
   const title = normalizeText(payload.title);
   const scopeText = missionScopeText(payload);
+  const projectId = normalizeText(payload.projectId || payload.project_id) || null;
 
   if (!title || !scopeText) {
     return json({ error: 'title and scope are required' }, { status: 400 });
   }
 
   const agents = await listAgents(env);
-  const plan = await buildMissionPlan(env, payload, agents);
+  const plan = payload.existingPlan || (await buildMissionPlan(env, payload, agents));
 
   if (!getSupabase(env)) {
-    return json(buildFallbackMission(payload, plan), { status: 201 });
+    const mission = buildFallbackMission(payload, plan);
+    mission.projectId = projectId;
+    return json(mission, { status: 201 });
   }
 
   const initiativeRows = await supabaseFetch(env, '/rest/v1/initiatives?select=*', {
     method: 'POST',
     body: JSON.stringify({
+      project_id: projectId,
       title,
       objective: normalizeText(payload.objective),
       scope_text: scopeText,
@@ -901,17 +1252,25 @@ async function createMission(env, payload) {
     })
   ]);
 
+  if (projectId) {
+    await Promise.all([
+      insertProjectTasks(env, projectTaskRowsFromSteps(projectId, initiativeId, plan.plan)),
+      insertProjectArtifacts(env, projectArtifactRowsFromOutputs(projectId, initiativeId, plan.outputs))
+    ]);
+  }
+
   return json(await getMissionDetails(env, initiativeId), { status: 201 });
 }
 
-async function listMissions(env) {
+async function listMissions(env, projectId) {
   if (!getSupabase(env)) {
-    return fallbackMissions;
+    return projectId ? fallbackMissions.filter((mission) => mission.projectId === projectId) : fallbackMissions;
   }
 
+  const projectFilter = projectId ? `project_id=eq.${encodeURIComponent(projectId)}&` : '';
   const data = await safeSupabaseFetch(
     env,
-    '/rest/v1/initiatives?select=id,title,objective,scope_text,stage,risk_level,summary,learning_summary,cycle_count,last_cycle_at,ai_status,ai_model,ai_response,created_at,updated_at&order=created_at.desc&limit=50'
+    `/rest/v1/initiatives?${projectFilter}select=id,project_id,title,objective,scope_text,stage,risk_level,summary,learning_summary,cycle_count,last_cycle_at,ai_status,ai_model,ai_response,created_at,updated_at&order=created_at.desc&limit=50`
   );
 
   if (!Array.isArray(data)) {
@@ -1141,35 +1500,76 @@ async function runMission(env, missionId, payload) {
   };
 
   if (getSupabase(env)) {
-    await Promise.all([
-      supabaseFetch(env, `/rest/v1/initiatives?id=eq.${encodeURIComponent(missionId)}&select=*`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          ai_status: run.aiStatus,
-          ai_model: run.aiModel,
-          learning_summary: updatedMemory.learningSummary,
-          cycle_count: cycleNumber,
-          last_cycle_at: updatedMemory.lastCycleAt,
-          ai_response: {
-            ...(mission.aiResponse || {}),
-            lastRun: run,
-            memory: updatedMemory
-          },
-          updated_at: updatedMemory.lastCycleAt
-        })
-      }),
-      storeAiRun(env, {
-        initiativeId: missionId,
-        cycleNumber,
-        model: run.aiModel,
-        status: result.ok ? 'completed' : 'fallback',
-        prompt: instruction,
-        instruction,
-        response: run,
-        memorySnapshot: memory,
-        errorText: result.ok ? undefined : result.reason || result.error
+    await supabaseFetch(env, `/rest/v1/initiatives?id=eq.${encodeURIComponent(missionId)}&select=*`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        ai_status: run.aiStatus,
+        ai_model: run.aiModel,
+        learning_summary: updatedMemory.learningSummary,
+        cycle_count: cycleNumber,
+        last_cycle_at: updatedMemory.lastCycleAt,
+        ai_response: {
+          ...(mission.aiResponse || {}),
+          lastRun: run,
+          memory: updatedMemory
+        },
+        updated_at: updatedMemory.lastCycleAt
       })
-    ]);
+    });
+    const aiRunRows = await storeAiRun(env, {
+      initiativeId: missionId,
+      cycleNumber,
+      model: run.aiModel,
+      status: result.ok ? 'completed' : 'fallback',
+      prompt: instruction,
+      instruction,
+      response: run,
+      memorySnapshot: memory,
+      errorText: result.ok ? undefined : result.reason || result.error
+    });
+    const aiRunId = aiRunRows?.[0]?.id;
+
+    if (mission.projectId) {
+      const taskRows = projectTaskRowsFromSteps(
+        mission.projectId,
+        missionId,
+        run.updatedSteps.map((step) => ({
+          title: step.stepTitle,
+          detail: step.note,
+          owner: 'Product Strategist',
+          status: step.status
+        })).concat(
+          run.nextActions.map((action) => ({
+            title: action,
+            detail: `Siguiente accion generada en ciclo ${cycleNumber}.`,
+            owner: 'Product Strategist',
+            status: 'queued'
+          }))
+        ),
+        cycleNumber
+      );
+      const artifactRows = projectArtifactRowsFromOutputs(
+        mission.projectId,
+        missionId,
+        run.artifacts,
+        cycleNumber,
+        aiRunId
+      );
+
+      await Promise.all([
+        insertProjectTasks(env, taskRows),
+        insertProjectArtifacts(env, artifactRows),
+        supabaseFetch(env, `/rest/v1/projects?id=eq.${encodeURIComponent(mission.projectId)}&select=*`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            learning_summary: updatedMemory.learningSummary,
+            cycle_count: cycleNumber,
+            last_cycle_at: updatedMemory.lastCycleAt,
+            updated_at: updatedMemory.lastCycleAt
+          })
+        })
+      ]);
+    }
   } else {
     const fallbackMission = fallbackMissions.find((item) => item.id === missionId);
     if (fallbackMission) {
@@ -1322,8 +1722,38 @@ function pageHtml(env) {
 
       <div class="layout">
         <section class="stack">
+          <h2>Nuevo proyecto</h2>
+          <form id="projectForm" class="stack">
+            <input id="projectName" placeholder="Nombre del proyecto" required>
+            <input id="projectObjective" placeholder="Objetivo del proyecto" required>
+            <textarea id="projectScope" placeholder="Scope del proyecto" required></textarea>
+            <input id="projectAudience" placeholder="Audiencia / equipo">
+            <textarea id="projectConstraints" placeholder="Restricciones"></textarea>
+            <div class="split">
+              <select id="projectType">
+                <option value="general">General</option>
+                <option value="podcast">Podcast</option>
+                <option value="software">Software</option>
+                <option value="marketing">Marketing</option>
+                <option value="legal">Legal</option>
+              </select>
+              <select id="projectRiskLevel">
+                <option value="low">Riesgo bajo</option>
+                <option value="medium" selected>Riesgo medio</option>
+                <option value="high">Riesgo alto</option>
+              </select>
+            </div>
+            <button type="submit">Crear proyecto</button>
+          </form>
+          <div class="stack">
+            <h2>Proyectos</h2>
+            <div id="projects" class="list"></div>
+          </div>
           <h2>Nueva mision</h2>
           <form id="missionForm" class="stack">
+            <select id="projectSelect">
+              <option value="">Sin proyecto</option>
+            </select>
             <input id="title" placeholder="Titulo" required>
             <input id="objective" placeholder="Objetivo">
             <textarea id="scope" placeholder="Scope operativo" required></textarea>
@@ -1351,6 +1781,17 @@ function pageHtml(env) {
         </section>
 
         <section class="stack">
+          <div class="grid2">
+            <div id="projectDetail" class="surface stack"></div>
+            <div class="stack">
+              <h2>Tareas del proyecto</h2>
+              <div id="projectTasks" class="stack scroll"></div>
+            </div>
+          </div>
+          <div class="stack">
+            <h2>Artifacts del proyecto</h2>
+            <div id="projectArtifacts" class="stack scroll"></div>
+          </div>
           <div class="row" style="justify-content:space-between">
             <h2>Misiones</h2>
             <button id="refresh" class="ghost" type="button">Actualizar</button>
@@ -1404,6 +1845,9 @@ function pageHtml(env) {
     <script>
       const state = {
         token: localStorage.getItem('missionControlToken') || '',
+        projects: [],
+        selectedProjectId: '',
+        currentProject: null,
         missions: [],
         selectedId: '',
         currentMission: null
@@ -1459,8 +1903,65 @@ function pageHtml(env) {
         ).join('');
       }
 
+      async function loadProjects() {
+        state.projects = await request('/api/projects');
+        if (!state.selectedProjectId && state.projects[0]) state.selectedProjectId = state.projects[0].id;
+        renderProjects();
+        renderProjectSelect();
+        if (state.selectedProjectId) {
+          await selectProject(state.selectedProjectId);
+        } else {
+          $('projectDetail').innerHTML = '<div class="empty">Crea o selecciona un proyecto.</div>';
+          $('projectTasks').innerHTML = '<div class="empty">Sin tareas todavia.</div>';
+          $('projectArtifacts').innerHTML = '<div class="empty">Sin artifacts todavia.</div>';
+          await loadMissions();
+        }
+      }
+
+      function renderProjectSelect() {
+        $('projectSelect').innerHTML = '<option value="">Sin proyecto</option>' + state.projects.map((project) =>
+          '<option value="' + esc(project.id) + '"' + (project.id === state.selectedProjectId ? ' selected' : '') + '>' + esc(project.name) + '</option>'
+        ).join('');
+      }
+
+      function renderProjects() {
+        $('projects').innerHTML = state.projects.length ? state.projects.map((project) =>
+          '<button class="item ' + (project.id === state.selectedProjectId ? 'active' : '') + '" data-project-id="' + project.id + '">' +
+          '<strong>' + esc(project.name) + '</strong>' +
+          '<span class="muted">' + esc(project.projectType || 'general') + ' / ' + esc(project.status || 'active') + ' / ciclos ' + esc(project.cycleCount || 0) + '</span>' +
+          '</button>'
+        ).join('') : '<div class="empty">Sin proyectos</div>';
+        document.querySelectorAll('[data-project-id]').forEach((button) => {
+          button.addEventListener('click', () => selectProject(button.dataset.projectId));
+        });
+      }
+
+      async function selectProject(id) {
+        state.selectedProjectId = id;
+        renderProjects();
+        renderProjectSelect();
+        const project = await request('/api/projects/' + id);
+        state.currentProject = project;
+        $('projectDetail').innerHTML =
+          '<h2>' + esc(project.name) + '</h2>' +
+          '<p class="muted">' + esc(project.objective || project.scopeDefinition || '') + '</p>' +
+          '<div class="toolbar"><span class="badge">' + esc(project.projectType || 'general') + '</span><span class="badge">' + esc(project.riskLevel || 'medium') + '</span><span class="badge">tareas ' + esc((project.tasks || []).length) + '</span><span class="badge">artifacts ' + esc((project.artifacts || []).length) + '</span></div>' +
+          (project.learningSummary ? '<p>' + esc(project.learningSummary) + '</p>' : '');
+        $('projectTasks').innerHTML = (project.tasks || []).map((task) =>
+          '<div class="item"><strong>' + esc(task.title) + '</strong><span class="muted">' + esc(task.owner) + ' / ' + esc(task.priority) + ' / ' + esc(task.status) + '</span><p class="muted">' + esc(task.detail) + '</p></div>'
+        ).join('') || '<div class="empty">Sin tareas todavia.</div>';
+        $('projectArtifacts').innerHTML = (project.artifacts || []).map((artifact) =>
+          '<div class="item"><strong>' + esc(artifact.name) + '</strong><span class="muted">' + esc(artifact.artifactType) + ' / ciclo ' + esc(artifact.sourceCycleNumber || '-') + '</span><p class="muted">' + esc(artifact.content).slice(0, 260) + '</p></div>'
+        ).join('') || '<div class="empty">Sin artifacts todavia.</div>';
+        state.missions = project.missions || [];
+        if (!state.missions.some((mission) => mission.id === state.selectedId)) state.selectedId = state.missions[0]?.id || '';
+        renderMissions();
+        if (state.selectedId) await selectMission(state.selectedId);
+      }
+
       async function loadMissions() {
-        state.missions = await request('/api/missions');
+        const qs = state.selectedProjectId ? '?projectId=' + encodeURIComponent(state.selectedProjectId) : '';
+        state.missions = await request('/api/missions' + qs);
         if (!state.selectedId && state.missions[0]) state.selectedId = state.missions[0].id;
         renderMissions();
         if (state.selectedId) await selectMission(state.selectedId);
@@ -1520,11 +2021,40 @@ function pageHtml(env) {
 
       $('refresh').addEventListener('click', loadMissions);
 
+      $('projectSelect').addEventListener('change', async () => {
+        state.selectedProjectId = $('projectSelect').value;
+        if (state.selectedProjectId) {
+          await selectProject(state.selectedProjectId);
+        } else {
+          await loadMissions();
+        }
+      });
+
+      $('projectForm').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const project = await request('/api/projects', {
+          method: 'POST',
+          body: JSON.stringify({
+            name: $('projectName').value,
+            objective: $('projectObjective').value,
+            scope: $('projectScope').value,
+            audience: $('projectAudience').value,
+            constraints: $('projectConstraints').value,
+            projectType: $('projectType').value,
+            riskLevel: $('projectRiskLevel').value
+          })
+        });
+        state.selectedProjectId = project.id;
+        event.target.reset();
+        await loadProjects();
+      });
+
       $('missionForm').addEventListener('submit', async (event) => {
         event.preventDefault();
         const mission = await request('/api/missions', {
           method: 'POST',
           body: JSON.stringify({
+            projectId: $('projectSelect').value || undefined,
             title: $('title').value,
             objective: $('objective').value,
             scope: $('scope').value,
@@ -1535,7 +2065,7 @@ function pageHtml(env) {
         });
         state.selectedId = mission.id;
         event.target.reset();
-        await loadMissions();
+        await loadProjects();
       });
 
       $('runMission').addEventListener('click', async () => {
@@ -1546,6 +2076,7 @@ function pageHtml(env) {
         });
         print('runResult', result.run);
         await selectMission(state.selectedId);
+        if (state.selectedProjectId) await selectProject(state.selectedProjectId);
       });
 
       $('sendChat').addEventListener('click', async () => {
@@ -1564,7 +2095,7 @@ function pageHtml(env) {
         print('delegateResult', result);
       });
 
-      Promise.all([loadStatus(), loadAgents(), loadMissions()]).catch((error) => {
+      Promise.all([loadStatus(), loadAgents(), loadProjects()]).catch((error) => {
         print('runResult', error.message);
       });
     </script>
@@ -1616,8 +2147,48 @@ async function handleRequest(request, env) {
       return delegateInitiative(env, await readJson(request));
     }
 
+    if (url.pathname === '/api/projects' && request.method === 'GET') {
+      return json(await listProjects(env));
+    }
+
+    if (url.pathname === '/api/projects' && request.method === 'POST') {
+      const guard = guardOperator(request, env);
+      if (guard) return guard;
+      return createProject(env, await readJson(request));
+    }
+
+    const projectTasksMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/tasks$/);
+    if (projectTasksMatch && request.method === 'GET') {
+      const tasks = await listProjectTasks(env, projectTasksMatch[1]);
+      return tasks ? json(tasks) : json({ error: 'project not found' }, { status: 404 });
+    }
+
+    if (projectTasksMatch && request.method === 'POST') {
+      const guard = guardOperator(request, env);
+      if (guard) return guard;
+      return createProjectTask(env, projectTasksMatch[1], await readJson(request));
+    }
+
+    const projectArtifactsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/artifacts$/);
+    if (projectArtifactsMatch && request.method === 'GET') {
+      const artifacts = await listProjectArtifacts(env, projectArtifactsMatch[1]);
+      return artifacts ? json(artifacts) : json({ error: 'project not found' }, { status: 404 });
+    }
+
+    if (projectArtifactsMatch && request.method === 'POST') {
+      const guard = guardOperator(request, env);
+      if (guard) return guard;
+      return createProjectArtifact(env, projectArtifactsMatch[1], await readJson(request));
+    }
+
+    const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/);
+    if (projectMatch && request.method === 'GET') {
+      const project = await getProjectDetails(env, projectMatch[1]);
+      return project ? json(project) : json({ error: 'project not found' }, { status: 404 });
+    }
+
     if (url.pathname === '/api/missions' && request.method === 'GET') {
-      return json(await listMissions(env));
+      return json(await listMissions(env, url.searchParams.get('projectId') || url.searchParams.get('project_id')));
     }
 
     if (url.pathname === '/api/missions' && request.method === 'POST') {
@@ -1650,6 +2221,13 @@ async function handleRequest(request, env) {
       const guard = guardOperator(request, env);
       if (guard) return guard;
       return updateStep(env, stepMatch[1], await readJson(request));
+    }
+
+    const taskMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)$/);
+    if (taskMatch && request.method === 'PATCH') {
+      const guard = guardOperator(request, env);
+      if (guard) return guard;
+      return updateProjectTask(env, taskMatch[1], await readJson(request));
     }
 
     if (url.pathname === '/api/chat' && request.method === 'POST') {

@@ -34,11 +34,36 @@ if (delegate.status !== 200) {
   throw new Error(`Delegate endpoint failed with ${delegate.status}`);
 }
 
+const project = await worker.fetch(
+  new Request('http://localhost/api/projects', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      name: 'Smoke project',
+      objective: 'Validar proyectos',
+      scope: 'Crear proyecto, tareas y artifacts iniciales',
+      projectType: 'general',
+      riskLevel: 'medium'
+    })
+  }),
+  env
+);
+if (project.status !== 201) {
+  throw new Error(`Projects endpoint failed with ${project.status}`);
+}
+const createdProject = await project.json();
+
+const projects = await worker.fetch(new Request('http://localhost/api/projects'), env);
+if (projects.status !== 200) {
+  throw new Error(`Projects list endpoint failed with ${projects.status}`);
+}
+
 const mission = await worker.fetch(
   new Request('http://localhost/api/missions', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
+      projectId: createdProject.id,
       title: 'Smoke mission',
       objective: 'Validar el Worker',
       scope: 'Crear un plan operativo minimo para comprobar rutas',
