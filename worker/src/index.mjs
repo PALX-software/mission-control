@@ -369,10 +369,30 @@ function missionRunSchema() {
   return {
     type: 'object',
     additionalProperties: false,
-    required: ['brief', 'status', 'completedSteps', 'updatedSteps', 'nextActions', 'risks', 'artifacts'],
+    required: [
+      'brief',
+      'status',
+      'learningSummary',
+      'decisions',
+      'newFacts',
+      'completedSteps',
+      'updatedSteps',
+      'nextActions',
+      'risks',
+      'artifacts'
+    ],
     properties: {
       brief: { type: 'string' },
       status: { type: 'string', enum: ['running', 'blocked', 'done'] },
+      learningSummary: { type: 'string' },
+      decisions: {
+        type: 'array',
+        items: { type: 'string' }
+      },
+      newFacts: {
+        type: 'array',
+        items: { type: 'string' }
+      },
       completedSteps: {
         type: 'array',
         items: { type: 'string' }
@@ -658,11 +678,32 @@ function mapMissionRow(row) {
     stage: row.stage,
     riskLevel: row.risk_level,
     summary: row.summary || '',
+    learningSummary: row.learning_summary || '',
+    cycleCount: row.cycle_count || 0,
+    lastCycleAt: row.last_cycle_at || undefined,
     aiStatus: row.ai_status || '',
     aiModel: row.ai_model || '',
     aiResponse: row.ai_response || undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at || row.created_at
+  };
+}
+
+function mapRunRow(row) {
+  return {
+    id: row.id,
+    missionId: row.initiative_id,
+    cycleNumber: row.cycle_number || undefined,
+    provider: row.provider,
+    model: row.model,
+    status: row.status,
+    prompt: row.prompt,
+    instruction: row.instruction || row.prompt,
+    response: row.response || {},
+    errorText: row.error_text || '',
+    memorySnapshot: row.memory_snapshot || {},
+    startedAt: row.started_at,
+    completedAt: row.completed_at || undefined
   };
 }
 
@@ -714,6 +755,9 @@ function buildFallbackMission(payload, plan) {
     stage: plan.stage,
     riskLevel: plan.riskLevel,
     summary: plan.summary,
+    learningSummary: '',
+    cycleCount: 0,
+    lastCycleAt: undefined,
     aiStatus: plan.aiStatus,
     aiModel: plan.aiModel || defaultOpenAiModel,
     aiResponse: plan,
@@ -753,11 +797,14 @@ async function storeAiRun(env, payload) {
     method: 'POST',
     body: JSON.stringify({
       initiative_id: payload.initiativeId,
+      cycle_number: payload.cycleNumber || null,
       provider: 'openai',
       model: payload.model,
       status: payload.status,
       prompt: payload.prompt,
+      instruction: payload.instruction || payload.prompt,
       response: payload.response,
+      memory_snapshot: payload.memorySnapshot || {},
       error_text: payload.errorText || null,
       completed_at: new Date().toISOString()
     })
@@ -843,7 +890,13 @@ async function createMission(env, payload) {
       model: plan.aiModel,
       status: plan.source === 'openai' ? 'completed' : 'fallback',
       prompt: title,
+      instruction: 'create mission plan',
       response: plan,
+      memorySnapshot: {
+        learningSummary: '',
+        cycleCount: 0,
+        source: 'mission_create'
+      },
       errorText: plan.aiError
     })
   ]);
@@ -858,7 +911,7 @@ async function listMissions(env) {
 
   const data = await safeSupabaseFetch(
     env,
-    '/rest/v1/initiatives?select=id,title,objective,scope_text,stage,risk_level,summary,ai_status,ai_model,ai_response,created_at,updated_at&order=created_at.desc&limit=50'
+    '/rest/v1/initiatives?select=id,title,objective,scope_text,stage,risk_level,summary,learning_summary,cycle_count,last_cycle_at,ai_status,ai_model,ai_response,created_at,updated_at&order=created_at.desc&limit=50'
   );
 
   if (!Array.isArray(data)) {
@@ -889,7 +942,7 @@ async function getMissionDetails(env, id) {
     ),
     supabaseFetch(
       env,
-      `/rest/v1/ai_runs?initiative_id=eq.${encodeURIComponent(id)}&select=*&order=started_at.desc&limit=10`
+      `/rest/v1/ai_runs?initiative_id=eq.${encodeURIComponent(id)}&select=*&order=started_at.desc&limit=25`
     )
   ]);
 
@@ -902,7 +955,104 @@ async function getMissionDetails(env, id) {
     assignments: safeArray(assignmentRows).map(mapAssignmentRow),
     steps: safeArray(stepRows).map(mapStepRow),
     outputs: safeArray(outputRows).map(mapOutputRow),
-    runs: safeArray(runRows)
+    runs: safeArray(runRows).map(mapRunRow)
+  };
+}
+
+async function listMissionRuns(env, id) {
+  if (!getSupabase(env)) {
+    const mission = fallbackMissions.find((item) => item.id === id);
+    return mission ? safeArray(mission.runs) : undefined;
+  }
+
+  const rows = await supabaseFetch(
+    env,
+    `/rest/v1/ai_runs?initiative_id=eq.${encodeURIComponent(id)}&select=*&order=started_at.desc&limit=50`
+  );
+
+  return safeArray(rows)
+    .map(mapRunRow)
+    .filter((run) => run.cycleNumber || run.response?.cycleNumber);
+}
+
+function compactRunForMemory(run) {
+  const response = run.response || run;
+
+  return {
+    cycleNumber: run.cycleNumber || response.cycleNumber,
+    status: response.status || run.status,
+    instruction: run.instruction || response.instruction || run.prompt,
+    brief: response.brief || '',
+    learningSummary: response.learningSummary || '',
+    decisions: safeArray(response.decisions).slice(0, 6),
+    newFacts: safeArray(response.newFacts).slice(0, 6),
+    nextActions: safeArray(response.nextActions).slice(0, 6),
+    risks: safeArray(response.risks).slice(0, 6),
+    completedAt: run.completedAt || run.startedAt
+  };
+}
+
+function buildMissionMemory(mission) {
+  const recentCycles = safeArray(mission.runs)
+    .filter((run) => run.cycleNumber || run.response?.cycleNumber)
+    .slice(0, 12)
+    .map(compactRunForMemory);
+
+  return {
+    learningSummary:
+      mission.learningSummary ||
+      mission.aiResponse?.memory?.learningSummary ||
+      mission.aiResponse?.lastRun?.learningSummary ||
+      '',
+    cycleCount: mission.cycleCount || recentCycles.length || 0,
+    lastCycleAt: mission.lastCycleAt || recentCycles[0]?.completedAt,
+    recentCycles
+  };
+}
+
+function normalizeRun(candidate, cycleNumber, instruction, memory) {
+  return {
+    ...candidate,
+    cycleNumber,
+    instruction,
+    brief: normalizeText(candidate.brief, 'Ciclo ejecutado.'),
+    status: normalizeEnum(candidate.status, ['running', 'blocked', 'done'], 'running'),
+    learningSummary: normalizeText(candidate.learningSummary, memory.learningSummary || candidate.brief),
+    decisions: safeArray(candidate.decisions)
+      .map((item) => normalizeText(item))
+      .filter(Boolean)
+      .slice(0, 12),
+    newFacts: safeArray(candidate.newFacts)
+      .map((item) => normalizeText(item))
+      .filter(Boolean)
+      .slice(0, 12),
+    completedSteps: safeArray(candidate.completedSteps)
+      .map((item) => normalizeText(item))
+      .filter(Boolean)
+      .slice(0, 12),
+    updatedSteps: safeArray(candidate.updatedSteps)
+      .map((step) => ({
+        stepTitle: normalizeText(step.stepTitle, 'Paso sin titulo'),
+        status: normalizeEnum(step.status, taskStatuses, 'running'),
+        note: normalizeText(step.note, 'Actualizado por ciclo IA.')
+      }))
+      .slice(0, 12),
+    nextActions: safeArray(candidate.nextActions)
+      .map((item) => normalizeText(item))
+      .filter(Boolean)
+      .slice(0, 12),
+    risks: safeArray(candidate.risks)
+      .map((item) => normalizeText(item))
+      .filter(Boolean)
+      .slice(0, 12),
+    artifacts: safeArray(candidate.artifacts)
+      .map((artifact) => ({
+        name: normalizeText(artifact.name, 'Artifact'),
+        type: normalizeEnum(artifact.type, outputTypes, 'doc'),
+        content: normalizeText(artifact.content)
+      }))
+      .filter((artifact) => artifact.content)
+      .slice(0, 8)
   };
 }
 
@@ -913,10 +1063,32 @@ async function runMission(env, missionId, payload) {
     return json({ error: 'mission not found' }, { status: 404 });
   }
 
+  const previousCycleCount =
+    mission.cycleCount ||
+    safeArray(mission.runs).reduce(
+      (max, run) => Math.max(max, run.cycleNumber || run.response?.cycleNumber || 0),
+      0
+    );
+  const cycleNumber = previousCycleCount + 1;
+  const instruction = normalizeText(payload.instruction, 'Ejecuta el siguiente avance operativo.');
+  const memory = buildMissionMemory(mission);
   const input = JSON.stringify(
     {
-      mission,
-      instruction: normalizeText(payload.instruction, 'Ejecuta el siguiente avance operativo.')
+      mission: {
+        id: mission.id,
+        title: mission.title,
+        objective: mission.objective,
+        scopeText: mission.scopeText,
+        stage: mission.stage,
+        riskLevel: mission.riskLevel,
+        summary: mission.summary,
+        assignments: mission.assignments,
+        steps: mission.steps,
+        outputs: mission.outputs
+      },
+      cycleNumber,
+      instruction,
+      projectMemory: memory
     },
     null,
     2
@@ -925,29 +1097,48 @@ async function runMission(env, missionId, payload) {
     schemaName: 'mission_control_run',
     schema: missionRunSchema(),
     instructions:
-      'Eres Mission Control ejecutando un ciclo de avance. No inventes integraciones externas ya completadas. Genera evidencia, siguientes acciones y riesgos para que el equipo pueda avanzar.',
+      'Eres Mission Control ejecutando un ciclo de avance. Usa projectMemory y recentCycles como memoria del proyecto. Genera avance operativo, decisiones, hechos nuevos y un learningSummary acumulado que reemplace la memoria anterior. No inventes integraciones externas ya completadas. Responde en espanol neutro y sin texto fuera del JSON.',
     input,
     maxOutputTokens: 2200
   });
   const run = result.ok
-    ? {
-        ...result.data,
-        source: 'openai',
-        aiStatus: 'executed',
-        aiModel: result.model
-      }
-    : {
-        brief: 'La mision quedo en cola porque falta configurar OPENAI_API_KEY o la llamada a OpenAI fallo.',
-        status: 'blocked',
-        completedSteps: [],
-        updatedSteps: [],
-        nextActions: ['Configurar OPENAI_API_KEY como secreto del Worker y reintentar.'],
-        risks: [result.reason || result.error || 'openai_unavailable'],
-        artifacts: [],
-        source: 'fallback',
-        aiStatus: 'fallback',
-        aiModel: result.model || defaultOpenAiModel
-      };
+    ? normalizeRun(
+        {
+          ...result.data,
+          source: 'openai',
+          aiStatus: 'executed',
+          aiModel: result.model
+        },
+        cycleNumber,
+        instruction,
+        memory
+      )
+    : normalizeRun(
+        {
+          brief: 'La mision quedo en cola porque falta configurar OPENAI_API_KEY o la llamada a OpenAI fallo.',
+          status: 'blocked',
+          learningSummary: memory.learningSummary || 'Sin aprendizaje nuevo; la capa IA no estuvo disponible.',
+          decisions: [],
+          newFacts: [],
+          completedSteps: [],
+          updatedSteps: [],
+          nextActions: ['Configurar OPENAI_API_KEY como secreto del Worker y reintentar.'],
+          risks: [result.reason || result.error || 'openai_unavailable'],
+          artifacts: [],
+          source: 'fallback',
+          aiStatus: 'fallback',
+          aiModel: result.model || defaultOpenAiModel
+        },
+        cycleNumber,
+        instruction,
+        memory
+      );
+  const updatedMemory = {
+    learningSummary: run.learningSummary,
+    cycleCount: cycleNumber,
+    lastCycleAt: new Date().toISOString(),
+    lastInstruction: instruction
+  };
 
   if (getSupabase(env)) {
     await Promise.all([
@@ -956,19 +1147,26 @@ async function runMission(env, missionId, payload) {
         body: JSON.stringify({
           ai_status: run.aiStatus,
           ai_model: run.aiModel,
+          learning_summary: updatedMemory.learningSummary,
+          cycle_count: cycleNumber,
+          last_cycle_at: updatedMemory.lastCycleAt,
           ai_response: {
             ...(mission.aiResponse || {}),
-            lastRun: run
+            lastRun: run,
+            memory: updatedMemory
           },
-          updated_at: new Date().toISOString()
+          updated_at: updatedMemory.lastCycleAt
         })
       }),
       storeAiRun(env, {
         initiativeId: missionId,
+        cycleNumber,
         model: run.aiModel,
         status: result.ok ? 'completed' : 'fallback',
-        prompt: normalizeText(payload.instruction, 'run mission'),
+        prompt: instruction,
+        instruction,
         response: run,
+        memorySnapshot: memory,
         errorText: result.ok ? undefined : result.reason || result.error
       })
     ]);
@@ -976,15 +1174,19 @@ async function runMission(env, missionId, payload) {
     const fallbackMission = fallbackMissions.find((item) => item.id === missionId);
     if (fallbackMission) {
       fallbackMission.aiStatus = run.aiStatus;
+      fallbackMission.learningSummary = updatedMemory.learningSummary;
+      fallbackMission.cycleCount = cycleNumber;
+      fallbackMission.lastCycleAt = updatedMemory.lastCycleAt;
       fallbackMission.aiResponse = {
         ...(fallbackMission.aiResponse || {}),
-        lastRun: run
+        lastRun: run,
+        memory: updatedMemory
       };
       fallbackMission.runs.unshift(run);
     }
   }
 
-  return json({ missionId, run });
+  return json({ missionId, cycleNumber, run, memory: updatedMemory });
 }
 
 async function chatWithMission(env, payload) {
@@ -1171,6 +1373,16 @@ function pageHtml(env) {
               <div id="outputs" class="stack"></div>
             </div>
           </div>
+          <div class="grid2">
+            <div class="stack">
+              <h2>Memoria del proyecto</h2>
+              <div id="memory" class="surface scroll"></div>
+            </div>
+            <div class="stack">
+              <h2>Historial IA</h2>
+              <div id="history" class="stack scroll"></div>
+            </div>
+          </div>
         </section>
 
         <section class="stack">
@@ -1193,7 +1405,8 @@ function pageHtml(env) {
       const state = {
         token: localStorage.getItem('missionControlToken') || '',
         missions: [],
-        selectedId: ''
+        selectedId: '',
+        currentMission: null
       };
 
       const $ = (id) => document.getElementById(id);
@@ -1223,6 +1436,16 @@ function pageHtml(env) {
         $(id).querySelector('pre').textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
       }
 
+      function esc(value) {
+        return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#39;'
+        })[char]);
+      }
+
       async function loadStatus() {
         const status = await request('/api/status');
         badge('aiStatus', status.openai.configured, status.openai.configured ? 'ChatGPT listo' : 'OPENAI_API_KEY falta');
@@ -1232,7 +1455,7 @@ function pageHtml(env) {
       async function loadAgents() {
         const agents = await request('/api/agents');
         $('agents').innerHTML = agents.map((agent) =>
-          '<div class="item"><strong>' + agent.name + '</strong><span class="muted">' + agent.domain + '</span></div>'
+          '<div class="item"><strong>' + esc(agent.name) + '</strong><span class="muted">' + esc(agent.domain) + '</span></div>'
         ).join('');
       }
 
@@ -1246,8 +1469,8 @@ function pageHtml(env) {
       function renderMissions() {
         $('missions').innerHTML = state.missions.length ? state.missions.map((mission) =>
           '<button class="item ' + (mission.id === state.selectedId ? 'active' : '') + '" data-id="' + mission.id + '">' +
-          '<strong>' + mission.title + '</strong>' +
-          '<span class="muted">' + mission.stage + ' / ' + mission.riskLevel + ' / ' + (mission.aiStatus || 'new') + '</span>' +
+          '<strong>' + esc(mission.title) + '</strong>' +
+          '<span class="muted">' + esc(mission.stage) + ' / ' + esc(mission.riskLevel) + ' / ' + esc(mission.aiStatus || 'new') + ' / ciclos ' + esc(mission.cycleCount || 0) + '</span>' +
           '</button>'
         ).join('') : '<div class="empty">Sin misiones</div>';
         document.querySelectorAll('[data-id]').forEach((button) => {
@@ -1259,21 +1482,35 @@ function pageHtml(env) {
         state.selectedId = id;
         renderMissions();
         const mission = await request('/api/missions/' + id);
+        state.currentMission = mission;
         $('missionDetail').innerHTML =
           '<div class="surface stack">' +
-          '<h2>' + mission.title + '</h2>' +
-          '<p class="muted">' + (mission.summary || mission.scopeText || '') + '</p>' +
-          '<div class="toolbar"><span class="badge">' + mission.stage + '</span><span class="badge">' + mission.riskLevel + '</span><span class="badge">' + (mission.aiModel || 'model pending') + '</span></div>' +
+          '<h2>' + esc(mission.title) + '</h2>' +
+          '<p class="muted">' + esc(mission.summary || mission.scopeText || '') + '</p>' +
+          '<div class="toolbar"><span class="badge">' + esc(mission.stage) + '</span><span class="badge">' + esc(mission.riskLevel) + '</span><span class="badge">' + esc(mission.aiModel || 'model pending') + '</span><span class="badge">ciclos ' + esc(mission.cycleCount || 0) + '</span></div>' +
           '</div>';
         $('steps').innerHTML = (mission.steps || []).map((step) =>
-          '<div class="step"><span class="num">' + step.position + '</span><div><strong>' + step.title + '</strong><p class="muted">' + step.detail + '</p><small>' + step.owner + '</small></div><span class="status ' + step.status + '">' + step.status + '</span></div>'
+          '<div class="step"><span class="num">' + esc(step.position) + '</span><div><strong>' + esc(step.title) + '</strong><p class="muted">' + esc(step.detail) + '</p><small>' + esc(step.owner) + '</small></div><span class="status ' + esc(step.status) + '">' + esc(step.status) + '</span></div>'
         ).join('') || '<div class="empty">Sin plan</div>';
         $('assignments').innerHTML = (mission.assignments || []).map((assignment) =>
-          '<div class="item"><strong>' + assignment.agent + '</strong><span class="muted">' + assignment.nextAction + '</span></div>'
+          '<div class="item"><strong>' + esc(assignment.agent) + '</strong><span class="muted">' + esc(assignment.nextAction) + '</span></div>'
         ).join('') || '<div class="empty">Sin asignaciones</div>';
         $('outputs').innerHTML = (mission.outputs || []).map((output) =>
-          '<div class="item"><strong>' + output.name + '</strong><span class="muted">' + output.outputType + ' / ' + output.status + '</span></div>'
+          '<div class="item"><strong>' + esc(output.name) + '</strong><span class="muted">' + esc(output.outputType) + ' / ' + esc(output.status) + '</span></div>'
         ).join('') || '<div class="empty">Sin outputs</div>';
+        $('memory').innerHTML = mission.learningSummary
+          ? '<p>' + esc(mission.learningSummary) + '</p><div class="toolbar"><span class="badge">ciclos ' + esc(mission.cycleCount || 0) + '</span><span class="badge">' + esc(mission.lastCycleAt || 'sin ciclo') + '</span></div>'
+          : '<div class="empty">Ejecuta un ciclo IA para crear memoria de este proyecto.</div>';
+        $('history').innerHTML = (mission.runs || [])
+          .filter((run) => run.cycleNumber || run.response?.cycleNumber)
+          .map((run) => {
+            const response = run.response || {};
+            const cycle = run.cycleNumber || response.cycleNumber || '?';
+            const brief = response.brief || run.prompt || '';
+            const learning = response.learningSummary || '';
+            return '<div class="item"><strong>Ciclo ' + esc(cycle) + ' · ' + esc(response.status || run.status) + '</strong><span class="muted">' + esc(run.instruction || run.prompt || '') + '</span><p class="muted">' + esc(brief) + '</p>' + (learning ? '<small>' + esc(learning) + '</small>' : '') + '</div>';
+          })
+          .join('') || '<div class="empty">Sin ciclos IA todavia.</div>';
       }
 
       $('saveToken').addEventListener('click', () => {
@@ -1387,6 +1624,12 @@ async function handleRequest(request, env) {
       const guard = guardOperator(request, env);
       if (guard) return guard;
       return createMission(env, await readJson(request));
+    }
+
+    const runsMatch = url.pathname.match(/^\/api\/missions\/([^/]+)\/runs$/);
+    if (runsMatch && request.method === 'GET') {
+      const runs = await listMissionRuns(env, runsMatch[1]);
+      return runs ? json(runs) : json({ error: 'mission not found' }, { status: 404 });
     }
 
     const missionMatch = url.pathname.match(/^\/api\/missions\/([^/]+)$/);

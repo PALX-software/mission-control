@@ -31,9 +31,16 @@ SUPABASE_PUBLISHABLE_KEY=...
 El Worker usa OpenAI Responses API como capa ChatGPT para:
 
 - Crear misiones con resumen, riesgo, plan, agentes asignados, criterios de aceptacion y outputs.
-- Ejecutar ciclos IA sobre una mision y guardar el resultado en `ai_runs`.
+- Ejecutar ciclos IA sobre una mision, guardar historial en `ai_runs` y actualizar memoria acumulada por proyecto.
 - Responder consultas operativas con contexto de la mision seleccionada.
 - Delegar iniciativas rapidas sin crear una mision persistente.
+
+Cada ciclo IA:
+
+- Recibe la mision, pasos, asignaciones, outputs, memoria acumulada y ciclos recientes.
+- Devuelve avance, decisiones, hechos nuevos, riesgos, siguientes acciones y artifacts.
+- Actualiza `learning_summary`, `cycle_count` y `last_cycle_at` en `initiatives`.
+- Guarda un snapshot en `ai_runs` con `cycle_number`, `instruction`, `response` y `memory_snapshot`.
 
 Variables/secrets:
 
@@ -126,6 +133,7 @@ Secrets de Cloudflare Worker:
 - `GET /api/missions`
 - `POST /api/missions`
 - `GET /api/missions/:id`
+- `GET /api/missions/:id/runs`
 - `POST /api/missions/:id/run`
 - `PATCH /api/steps/:id`
 - `POST /api/chat`

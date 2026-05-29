@@ -51,6 +51,24 @@ const mission = await worker.fetch(
 if (mission.status !== 201) {
   throw new Error(`Missions endpoint failed with ${mission.status}`);
 }
+const createdMission = await mission.json();
+
+const run = await worker.fetch(
+  new Request(`http://localhost/api/missions/${createdMission.id}/run`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ instruction: 'Guardar aprendizaje del primer ciclo' })
+  }),
+  env
+);
+if (run.status !== 200) {
+  throw new Error(`Mission run endpoint failed with ${run.status}`);
+}
+
+const runs = await worker.fetch(new Request(`http://localhost/api/missions/${createdMission.id}/runs`), env);
+if (runs.status !== 200) {
+  throw new Error(`Mission runs endpoint failed with ${runs.status}`);
+}
 
 const html = await worker.fetch(new Request('http://localhost/'), env);
 if (html.status !== 200) {
