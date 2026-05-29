@@ -680,10 +680,10 @@ function mapMissionRow(row) {
     summary: row.summary || '',
     learningSummary: row.learning_summary || '',
     cycleCount: row.cycle_count || 0,
-    lastCycleAt: row.last_cycle_at || undefined,
+    lastCycleAt: row.last_cycle_at || null,
     aiStatus: row.ai_status || '',
     aiModel: row.ai_model || '',
-    aiResponse: row.ai_response || undefined,
+    aiResponse: row.ai_response || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at || row.created_at
   };
