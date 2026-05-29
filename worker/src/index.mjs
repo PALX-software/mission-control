@@ -14,9 +14,19 @@ const riskLevels = ['low', 'medium', 'high'];
 const taskStatuses = ['queued', 'running', 'blocked', 'done'];
 const taskPriorities = ['low', 'medium', 'high', 'critical'];
 const projectStatuses = ['active', 'paused', 'done', 'archived'];
+const frameworks = [
+  'cloudflare-worker-supabase',
+  'nextjs-supabase',
+  'react-vite-supabase',
+  'nestjs-supabase',
+  'expo-supabase',
+  'python-fastapi-supabase'
+];
 const outputTypes = ['doc', 'code', 'qa_report', 'legal_review', 'launch_asset'];
 const defaultOpenAiModel = 'chat-latest';
 const defaultProjectRepo = 'https://github.com/PALX-software/mission-control';
+const defaultGithubOrg = 'PALX-software';
+const defaultCloudflareZone = 'zeqhora.com';
 
 function json(data, init = {}) {
   return new Response(JSON.stringify(data), {
@@ -685,11 +695,51 @@ function normalizeGithubRepo(value) {
   return repo.startsWith('https://github.com/') ? repo : defaultProjectRepo;
 }
 
+function slugify(value, fallback = 'project') {
+  const slug = normalizeText(value, fallback)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 54);
+
+  return slug || fallback;
+}
+
+function normalizeFramework(value) {
+  return normalizeEnum(value, frameworks, 'cloudflare-worker-supabase');
+}
+
+function normalizeGithubOrg(env, value) {
+  return normalizeText(value || env.GITHUB_ORG, defaultGithubOrg);
+}
+
+function plannedSubdomain(repoName, env, value) {
+  const zone = normalizeText(env.CLOUDFLARE_ZONE_NAME, defaultCloudflareZone);
+  const host = normalizeText(value);
+
+  if (host.includes('.')) {
+    return host.toLowerCase();
+  }
+
+  return `${slugify(host || repoName)}.${zone}`;
+}
+
+function integrationState(configured, extra = {}) {
+  return {
+    configured,
+    status: configured ? 'ready' : 'pending_config',
+    ...extra
+  };
+}
+
 function projectPromptBlueprint(payload, plan) {
   return [
     `Proyecto: ${normalizeText(payload.name, 'Proyecto')}`,
     `Objetivo: ${normalizeText(payload.objective, 'Definir objetivo')}`,
     `Scope: ${projectScopeText(payload)}`,
+    `Framework: ${normalizeFramework(payload.framework)}`,
     `Restricciones: ${normalizeText(payload.constraints, 'Sin restricciones declaradas')}`,
     `Resumen IA: ${normalizeText(plan?.summary, 'Plan inicial pendiente')}`
   ].join('\n');
@@ -706,6 +756,14 @@ function mapProjectRow(row) {
     riskLevel: row.risk_level,
     status: row.status || 'active',
     projectType: row.project_type || 'general',
+    framework: row.framework || 'cloudflare-worker-supabase',
+    repoName: row.repo_name || '',
+    githubOrg: row.github_org || defaultGithubOrg,
+    subdomain: row.subdomain || '',
+    supabaseProjectRef: row.supabase_project_ref || null,
+    supabaseProjectUrl: row.supabase_project_url || null,
+    cloudflareZone: row.cloudflare_zone || defaultCloudflareZone,
+    provisioningStatus: row.provisioning_status || {},
     learningSummary: row.learning_summary || '',
     cycleCount: row.cycle_count || 0,
     lastCycleAt: row.last_cycle_at || null,
@@ -824,6 +882,252 @@ function mapProjectArtifactRow(row) {
   };
 }
 
+function projectStandard(env, payload) {
+  const repoName = slugify(payload.repoName || payload.repo_name || payload.name || payload.title);
+  const githubOrg = normalizeGithubOrg(env, payload.githubOrg || payload.github_org);
+  const subdomain = plannedSubdomain(repoName, env, payload.subdomain);
+  const framework = normalizeFramework(payload.framework);
+  const cloudflareZone = normalizeText(env.CLOUDFLARE_ZONE_NAME, defaultCloudflareZone);
+
+  return {
+    framework,
+    repoName,
+    githubOrg,
+    githubRepo: `https://github.com/${githubOrg}/${repoName}`,
+    subdomain,
+    cloudflareZone
+  };
+}
+
+async function createGithubRepo(env, standard, payload) {
+  if (!env.GITHUB_TOKEN) {
+    return integrationState(false, {
+      provider: 'github',
+      target: `${standard.githubOrg}/${standard.repoName}`,
+      reason: 'missing_github_token'
+    });
+  }
+
+  const privateRepo = String(env.GITHUB_REPO_PRIVATE || 'true').toLowerCase() !== 'false';
+  const description = normalizeText(
+    payload.description || payload.objective,
+    `Provisioned by Mission Control for ${standard.subdomain}`
+  );
+  const createResponse = await fetch(`https://api.github.com/orgs/${standard.githubOrg}/repos`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${env.GITHUB_TOKEN}`,
+      accept: 'application/vnd.github+json',
+      'x-github-api-version': '2022-11-28',
+      'user-agent': 'mission-control-worker',
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      name: standard.repoName,
+      description,
+      homepage: `https://${standard.subdomain}`,
+      private: privateRepo,
+      auto_init: true,
+      has_issues: true,
+      has_projects: true,
+      has_wiki: false
+    })
+  });
+  const body = await createResponse.text();
+
+  if (createResponse.ok) {
+    const repo = JSON.parse(body);
+    return {
+      configured: true,
+      provider: 'github',
+      status: 'created',
+      target: repo.full_name,
+      url: repo.html_url
+    };
+  }
+
+  if (createResponse.status === 422) {
+    const existing = await fetch(`https://api.github.com/repos/${standard.githubOrg}/${standard.repoName}`, {
+      headers: {
+        authorization: `Bearer ${env.GITHUB_TOKEN}`,
+        accept: 'application/vnd.github+json',
+        'x-github-api-version': '2022-11-28',
+        'user-agent': 'mission-control-worker'
+      }
+    });
+
+    if (existing.ok) {
+      const repo = await existing.json();
+      return {
+        configured: true,
+        provider: 'github',
+        status: 'exists',
+        target: repo.full_name,
+        url: repo.html_url
+      };
+    }
+  }
+
+  return {
+    configured: true,
+    provider: 'github',
+    status: 'error',
+    target: `${standard.githubOrg}/${standard.repoName}`,
+    error: body.slice(0, 800)
+  };
+}
+
+async function createSupabaseProject(env, standard, payload) {
+  const missing = [];
+  if (!env.SUPABASE_ACCESS_TOKEN) missing.push('SUPABASE_ACCESS_TOKEN');
+  if (!env.SUPABASE_ORG_ID) missing.push('SUPABASE_ORG_ID');
+  if (!env.SUPABASE_DB_PASSWORD) missing.push('SUPABASE_DB_PASSWORD');
+
+  if (missing.length) {
+    return integrationState(false, {
+      provider: 'supabase',
+      target: standard.repoName,
+      reason: `missing_${missing.join('_').toLowerCase()}`
+    });
+  }
+
+  const response = await fetch('https://api.supabase.com/v1/projects', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${env.SUPABASE_ACCESS_TOKEN}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      organization_id: env.SUPABASE_ORG_ID,
+      name: standard.repoName,
+      database_password: env.SUPABASE_DB_PASSWORD,
+      region: env.SUPABASE_REGION || 'us-east-1'
+    })
+  });
+  const body = await response.text();
+
+  if (!response.ok) {
+    return {
+      configured: true,
+      provider: 'supabase',
+      status: 'error',
+      target: standard.repoName,
+      error: body.slice(0, 800)
+    };
+  }
+
+  const project = JSON.parse(body);
+  return {
+    configured: true,
+    provider: 'supabase',
+    status: 'created',
+    target: project.name || standard.repoName,
+    projectRef: project.id || project.ref || null,
+    url: project.id ? `https://${project.id}.supabase.co` : null,
+    raw: project
+  };
+}
+
+async function createCloudflareSubdomain(env, standard) {
+  if (!env.CLOUDFLARE_API_TOKEN || !env.CLOUDFLARE_ZONE_ID) {
+    return integrationState(false, {
+      provider: 'cloudflare',
+      target: standard.subdomain,
+      reason: 'missing_cloudflare_api_token_or_zone_id'
+    });
+  }
+
+  const target = normalizeText(env.CLOUDFLARE_DEFAULT_CNAME_TARGET);
+  const workerName = normalizeText(env.CLOUDFLARE_DEFAULT_WORKER_NAME);
+
+  if (!target && !workerName) {
+    return integrationState(false, {
+      configured: true,
+      provider: 'cloudflare',
+      target: standard.subdomain,
+      reason: 'missing_cloudflare_default_cname_target_or_worker_name'
+    });
+  }
+
+  if (target) {
+    const response = await fetch(`https://api.cloudflare.com/client/v4/zones/${env.CLOUDFLARE_ZONE_ID}/dns_records`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        type: 'CNAME',
+        name: standard.subdomain,
+        content: target,
+        proxied: true,
+        ttl: 1,
+        comment: 'Provisioned by Mission Control'
+      })
+    });
+    const body = await response.text();
+
+    if (response.ok) {
+      return {
+        configured: true,
+        provider: 'cloudflare',
+        status: 'created',
+        target: standard.subdomain,
+        mode: 'dns_cname'
+      };
+    }
+
+    if (response.status === 409 || body.includes('already exists')) {
+      return {
+        configured: true,
+        provider: 'cloudflare',
+        status: 'exists',
+        target: standard.subdomain,
+        mode: 'dns_cname'
+      };
+    }
+
+    return {
+      configured: true,
+      provider: 'cloudflare',
+      status: 'error',
+      target: standard.subdomain,
+      error: body.slice(0, 800)
+    };
+  }
+
+  return {
+    configured: true,
+    provider: 'cloudflare',
+    status: 'pending_worker_binding',
+    target: standard.subdomain,
+    workerName
+  };
+}
+
+async function provisionProject(env, standard, payload) {
+  const [github, supabase, cloudflare] = await Promise.all([
+    createGithubRepo(env, standard, payload),
+    createSupabaseProject(env, standard, payload),
+    createCloudflareSubdomain(env, standard)
+  ]);
+
+  return {
+    standard: {
+      framework: standard.framework,
+      githubOrg: standard.githubOrg,
+      repoName: standard.repoName,
+      githubRepo: standard.githubRepo,
+      subdomain: standard.subdomain,
+      cloudflareZone: standard.cloudflareZone
+    },
+    github,
+    supabase,
+    cloudflare,
+    updatedAt: new Date().toISOString()
+  };
+}
+
 function projectTaskRowsFromSteps(projectId, missionId, steps, cycleNumber) {
   if (!projectId) return [];
 
@@ -926,7 +1230,7 @@ async function listProjects(env) {
 
   const rows = await safeSupabaseFetch(
     env,
-    '/rest/v1/projects?select=id,name,objective,scope_definition,audience,constraints,risk_level,status,project_type,learning_summary,cycle_count,last_cycle_at,github_repo,prompt_blueprint,created_at,updated_at&order=created_at.desc&limit=50'
+    '/rest/v1/projects?select=id,name,objective,scope_definition,audience,constraints,risk_level,status,project_type,framework,repo_name,github_org,subdomain,supabase_project_ref,supabase_project_url,cloudflare_zone,provisioning_status,learning_summary,cycle_count,last_cycle_at,github_repo,prompt_blueprint,created_at,updated_at&order=created_at.desc&limit=50'
   );
 
   return safeArray(rows).map(mapProjectRow);
@@ -969,11 +1273,13 @@ async function createProject(env, payload) {
   const name = normalizeText(payload.name || payload.title);
   const objective = normalizeText(payload.objective);
   const scopeDefinition = projectScopeText(payload);
+  const framework = normalizeText(payload.framework);
 
-  if (!name || !objective || !scopeDefinition) {
-    return json({ error: 'name, objective and scope are required' }, { status: 400 });
+  if (!name || !objective || !scopeDefinition || !framework) {
+    return json({ error: 'name, objective, scope and framework are required' }, { status: 400 });
   }
 
+  const standard = projectStandard(env, { ...payload, name, objective, framework });
   const agents = await listAgents(env);
   const plan = await buildMissionPlan(
     env,
@@ -982,6 +1288,7 @@ async function createProject(env, payload) {
       objective,
       scope: scopeDefinition,
       constraints: normalizeText(payload.constraints),
+      framework: standard.framework,
       stage: 'plan',
       riskLevel: normalizeEnum(payload.riskLevel || payload.risk_level, riskLevels, 'medium')
     },
@@ -1000,11 +1307,17 @@ async function createProject(env, payload) {
       riskLevel: plan.riskLevel,
       status: 'active',
       projectType: normalizeText(payload.projectType || payload.project_type, 'general'),
+      framework: standard.framework,
+      repoName: standard.repoName,
+      githubOrg: standard.githubOrg,
+      subdomain: standard.subdomain,
+      cloudflareZone: standard.cloudflareZone,
+      provisioningStatus: await provisionProject(env, standard, payload),
       learningSummary: '',
       cycleCount: 0,
       lastCycleAt: null,
-      githubRepo: normalizeGithubRepo(payload.githubRepo || payload.github_repo),
-      promptBlueprint: projectPromptBlueprint({ ...payload, name, objective }, plan),
+      githubRepo: standard.githubRepo,
+      promptBlueprint: projectPromptBlueprint({ ...payload, name, objective, framework: standard.framework }, plan),
       createdAt: now,
       updatedAt: now,
       missions: [],
@@ -1033,10 +1346,29 @@ async function createProject(env, payload) {
       constraints: normalizeText(payload.constraints),
       risk_level: plan.riskLevel,
       discovery_mode: true,
-      github_repo: normalizeGithubRepo(payload.githubRepo || payload.github_repo),
-      prompt_blueprint: projectPromptBlueprint({ ...payload, name, objective }, plan),
+      github_repo: standard.githubRepo,
+      prompt_blueprint: projectPromptBlueprint({ ...payload, name, objective, framework: standard.framework }, plan),
       status: 'active',
-      project_type: normalizeText(payload.projectType || payload.project_type, 'general')
+      project_type: normalizeText(payload.projectType || payload.project_type, 'general'),
+      framework: standard.framework,
+      repo_name: standard.repoName,
+      github_org: standard.githubOrg,
+      subdomain: standard.subdomain,
+      cloudflare_zone: standard.cloudflareZone,
+      provisioning_status: {
+        standard: {
+          framework: standard.framework,
+          githubOrg: standard.githubOrg,
+          repoName: standard.repoName,
+          githubRepo: standard.githubRepo,
+          subdomain: standard.subdomain,
+          cloudflareZone: standard.cloudflareZone
+        },
+        github: { status: 'queued' },
+        supabase: { status: 'queued' },
+        cloudflare: { status: 'queued' },
+        updatedAt: now
+      }
     })
   });
   const project = projectRows[0];
@@ -1055,12 +1387,64 @@ async function createProject(env, payload) {
     throw new Error(await missionResponse.text());
   }
 
+  const provisioning = await provisionProject(env, standard, payload);
+  await supabaseFetch(env, `/rest/v1/projects?id=eq.${encodeURIComponent(project.id)}&select=*`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      provisioning_status: provisioning,
+      supabase_project_ref: provisioning.supabase.projectRef || null,
+      supabase_project_url: provisioning.supabase.url || null,
+      github_repo: provisioning.github.url || standard.githubRepo,
+      updated_at: provisioning.updatedAt
+    })
+  });
+
   return json(await getProjectDetails(env, project.id), { status: 201 });
 }
 
 async function listProjectTasks(env, projectId) {
   const project = await getProjectDetails(env, projectId);
   return project ? project.tasks : undefined;
+}
+
+async function provisionExistingProject(env, projectId) {
+  const project = await getProjectDetails(env, projectId);
+
+  if (!project) {
+    return json({ error: 'project not found' }, { status: 404 });
+  }
+
+  const standard = projectStandard(env, {
+    name: project.name,
+    repoName: project.repoName || project.name,
+    githubOrg: project.githubOrg,
+    subdomain: project.subdomain,
+    framework: project.framework
+  });
+  const provisioning = await provisionProject(env, standard, project);
+
+  if (getSupabase(env)) {
+    await supabaseFetch(env, `/rest/v1/projects?id=eq.${encodeURIComponent(projectId)}&select=*`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        framework: standard.framework,
+        repo_name: standard.repoName,
+        github_org: standard.githubOrg,
+        github_repo: provisioning.github.url || standard.githubRepo,
+        subdomain: standard.subdomain,
+        cloudflare_zone: standard.cloudflareZone,
+        supabase_project_ref: provisioning.supabase.projectRef || project.supabaseProjectRef || null,
+        supabase_project_url: provisioning.supabase.url || project.supabaseProjectUrl || null,
+        provisioning_status: provisioning,
+        updated_at: provisioning.updatedAt
+      })
+    });
+  }
+
+  return json({
+    projectId,
+    provisioning
+  });
 }
 
 async function createProjectTask(env, projectId, payload) {
@@ -1728,6 +2112,18 @@ function pageHtml(env) {
             <input id="projectObjective" placeholder="Objetivo del proyecto" required>
             <textarea id="projectScope" placeholder="Scope del proyecto" required></textarea>
             <input id="projectAudience" placeholder="Audiencia / equipo">
+            <select id="projectFramework" required>
+              <option value="cloudflare-worker-supabase">Cloudflare Worker + Supabase</option>
+              <option value="nextjs-supabase">Next.js + Supabase</option>
+              <option value="react-vite-supabase">React/Vite + Supabase</option>
+              <option value="nestjs-supabase">NestJS + Supabase</option>
+              <option value="expo-supabase">Expo + Supabase</option>
+              <option value="python-fastapi-supabase">FastAPI + Supabase</option>
+            </select>
+            <div class="split">
+              <input id="projectRepoName" placeholder="Repo GitHub (auto)">
+              <input id="projectSubdomain" placeholder="Subdominio (auto)">
+            </div>
             <textarea id="projectConstraints" placeholder="Restricciones"></textarea>
             <div class="split">
               <select id="projectType">
@@ -1928,7 +2324,7 @@ function pageHtml(env) {
         $('projects').innerHTML = state.projects.length ? state.projects.map((project) =>
           '<button class="item ' + (project.id === state.selectedProjectId ? 'active' : '') + '" data-project-id="' + project.id + '">' +
           '<strong>' + esc(project.name) + '</strong>' +
-          '<span class="muted">' + esc(project.projectType || 'general') + ' / ' + esc(project.status || 'active') + ' / ciclos ' + esc(project.cycleCount || 0) + '</span>' +
+          '<span class="muted">' + esc(project.framework || project.projectType || 'general') + ' / ' + esc(project.status || 'active') + ' / ' + esc(project.subdomain || '') + '</span>' +
           '</button>'
         ).join('') : '<div class="empty">Sin proyectos</div>';
         document.querySelectorAll('[data-project-id]').forEach((button) => {
@@ -1942,10 +2338,13 @@ function pageHtml(env) {
         renderProjectSelect();
         const project = await request('/api/projects/' + id);
         state.currentProject = project;
+        const provisioning = project.provisioningStatus || {};
         $('projectDetail').innerHTML =
           '<h2>' + esc(project.name) + '</h2>' +
           '<p class="muted">' + esc(project.objective || project.scopeDefinition || '') + '</p>' +
-          '<div class="toolbar"><span class="badge">' + esc(project.projectType || 'general') + '</span><span class="badge">' + esc(project.riskLevel || 'medium') + '</span><span class="badge">tareas ' + esc((project.tasks || []).length) + '</span><span class="badge">artifacts ' + esc((project.artifacts || []).length) + '</span></div>' +
+          '<div class="toolbar"><span class="badge">' + esc(project.framework || 'cloudflare-worker-supabase') + '</span><span class="badge">' + esc(project.riskLevel || 'medium') + '</span><span class="badge">' + esc(project.githubOrg || 'PALX-software') + '/' + esc(project.repoName || '') + '</span><span class="badge">' + esc(project.subdomain || '') + '</span></div>' +
+          '<div class="toolbar"><span class="badge">GitHub ' + esc(provisioning.github?.status || 'pending') + '</span><span class="badge">Supabase ' + esc(provisioning.supabase?.status || 'pending') + '</span><span class="badge">Cloudflare ' + esc(provisioning.cloudflare?.status || 'pending') + '</span></div>' +
+          '<div class="toolbar"><span class="badge">tareas ' + esc((project.tasks || []).length) + '</span><span class="badge">artifacts ' + esc((project.artifacts || []).length) + '</span></div>' +
           (project.learningSummary ? '<p>' + esc(project.learningSummary) + '</p>' : '');
         $('projectTasks').innerHTML = (project.tasks || []).map((task) =>
           '<div class="item"><strong>' + esc(task.title) + '</strong><span class="muted">' + esc(task.owner) + ' / ' + esc(task.priority) + ' / ' + esc(task.status) + '</span><p class="muted">' + esc(task.detail) + '</p></div>'
@@ -2039,6 +2438,9 @@ function pageHtml(env) {
             objective: $('projectObjective').value,
             scope: $('projectScope').value,
             audience: $('projectAudience').value,
+            framework: $('projectFramework').value,
+            repoName: $('projectRepoName').value,
+            subdomain: $('projectSubdomain').value,
             constraints: $('projectConstraints').value,
             projectType: $('projectType').value,
             riskLevel: $('projectRiskLevel').value
@@ -2127,6 +2529,19 @@ async function handleRequest(request, env) {
           configured: Boolean(getOpenAi(env)),
           model: env.OPENAI_MODEL || defaultOpenAiModel
         },
+        integrations: {
+          github: {
+            configured: Boolean(env.GITHUB_TOKEN),
+            org: normalizeGithubOrg(env)
+          },
+          supabaseManagement: {
+            configured: Boolean(env.SUPABASE_ACCESS_TOKEN && env.SUPABASE_ORG_ID && env.SUPABASE_DB_PASSWORD)
+          },
+          cloudflare: {
+            configured: Boolean(env.CLOUDFLARE_API_TOKEN && env.CLOUDFLARE_ZONE_ID),
+            zone: normalizeText(env.CLOUDFLARE_ZONE_NAME, defaultCloudflareZone)
+          }
+        },
         operatorToken: { required: Boolean(env.MISSION_CONTROL_OPERATOR_TOKEN) }
       });
     }
@@ -2179,6 +2594,13 @@ async function handleRequest(request, env) {
       const guard = guardOperator(request, env);
       if (guard) return guard;
       return createProjectArtifact(env, projectArtifactsMatch[1], await readJson(request));
+    }
+
+    const projectProvisionMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/provision$/);
+    if (projectProvisionMatch && request.method === 'POST') {
+      const guard = guardOperator(request, env);
+      if (guard) return guard;
+      return provisionExistingProject(env, projectProvisionMatch[1]);
     }
 
     const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/);

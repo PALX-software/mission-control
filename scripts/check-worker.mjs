@@ -42,6 +42,7 @@ const project = await worker.fetch(
       name: 'Smoke project',
       objective: 'Validar proyectos',
       scope: 'Crear proyecto, tareas y artifacts iniciales',
+      framework: 'cloudflare-worker-supabase',
       projectType: 'general',
       riskLevel: 'medium'
     })

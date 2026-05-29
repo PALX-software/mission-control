@@ -31,6 +31,8 @@ SUPABASE_PUBLISHABLE_KEY=...
 El Worker usa OpenAI Responses API como capa ChatGPT para:
 
 - Crear proyectos como contenedor principal de trabajo.
+- Exigir framework antes de crear un proyecto.
+- Establecer como estandar GitHub bajo `PALX-software`, Supabase y subdominio Cloudflare.
 - Crear misiones con resumen, riesgo, plan, agentes asignados, criterios de aceptacion y outputs.
 - Convertir planes y ciclos IA en tareas accionables.
 - Guardar artifacts generados por la IA asociados al proyecto y la mision.
@@ -55,6 +57,16 @@ MISSION_CONTROL_OPERATOR_TOKEN=...
 ```
 
 `OPENAI_API_KEY` y `MISSION_CONTROL_OPERATOR_TOKEN` deben configurarse como secrets del Worker, no en Git. Si `OPENAI_API_KEY` falta, el sistema conserva un fallback deterministico para crear planes basicos, pero ChatGPT queda bloqueado hasta configurar el secreto.
+
+Provisioning opcional por proyecto:
+
+- `GITHUB_TOKEN`: crea repos en `PALX-software`.
+- `GITHUB_ORG=PALX-software`.
+- `SUPABASE_ACCESS_TOKEN`, `SUPABASE_ORG_ID`, `SUPABASE_DB_PASSWORD`, `SUPABASE_REGION`: crean proyecto Supabase.
+- `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_ZONE_NAME=zeqhora.com`: reservan subdominio.
+- `CLOUDFLARE_DEFAULT_CNAME_TARGET` o `CLOUDFLARE_DEFAULT_WORKER_NAME`: define como se prepara el subdominio.
+
+Si falta algun secreto, el proyecto se crea con estado `pending_config` para esa integracion y se puede reintentar con `POST /api/projects/:id/provision`.
 
 ## Backend (puerto 3001)
 
@@ -137,6 +149,7 @@ Secrets de Cloudflare Worker:
 - `GET /api/projects`
 - `POST /api/projects`
 - `GET /api/projects/:id`
+- `POST /api/projects/:id/provision`
 - `GET /api/projects/:id/tasks`
 - `POST /api/projects/:id/tasks`
 - `GET /api/projects/:id/artifacts`
